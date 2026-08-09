@@ -18,6 +18,7 @@ import type {
   ChatMessage,
   ChatDraftRestoresResponse,
   ChatPendingTask,
+  MikaBootstrapResponse,
   PrioritizeQueuedChatTaskResponse,
   SendChatMessageResponse,
   StartMikaOnboardingResponse,
@@ -1315,6 +1316,31 @@ export const StartMikaOnboardingResponseSchema: z.ZodType<StartMikaOnboardingRes
   message_id: z.string().nullish().transform((id) => id ?? undefined),
   created_at: z.string().nullish().transform((at) => at ?? undefined),
 }).loose();
+
+// `POST /api/agents/mika` — like `MinimalAgentSchema` above, this deliberately
+// does not schematise the full Agent record. `onboarding_session` is required
+// because `bootstrapMika()` in onboarding/use-bootstrap-mika.ts treats its
+// absence as the one recoverable failure mode (server committed the agent but
+// not the session); everything else stays loose/optional so unrelated field
+// drift on the Agent side degrades instead of white-screening onboarding.
+const MinimalChatSessionSchema = z.object({
+  id: z.string(),
+  agent_id: z.string().optional(),
+  last_message: z.unknown().nullish().transform((v) => v ?? undefined),
+}).loose();
+
+export const MikaBootstrapResponseSchema = z.object({
+  id: z.string(),
+  system_key: z.string().optional(),
+  onboarding_session: MinimalChatSessionSchema.optional(),
+}).loose();
+
+// Fallback when the response fails to parse. `onboarding_session` stays
+// absent so `bootstrapMika()` throws its existing "session was not returned"
+// error instead of navigating to a fabricated chat session.
+export const EMPTY_MIKA_BOOTSTRAP_RESPONSE: MikaBootstrapResponse = {
+  id: "",
+} as MikaBootstrapResponse;
 
 export const PrioritizeQueuedChatTaskResponseSchema:
   z.ZodType<PrioritizeQueuedChatTaskResponse> = z.object({

@@ -1971,3 +1971,54 @@ describe("ApiClient startMikaOnboarding", () => {
     ).resolves.toEqual({ started: false });
   });
 });
+
+describe("ApiClient createMikaAgent response schema", () => {
+  it("returns the agent and onboarding session a well-formed response reports", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            id: "agent-1",
+            system_key: "mika",
+            onboarding_session: { id: "session-1", agent_id: "agent-1", last_message: null },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    await expect(
+      new ApiClient("https://api.example.test").createMikaAgent({
+        runtime_id: "runtime-1",
+        language: "en",
+      }),
+    ).resolves.toEqual({
+      id: "agent-1",
+      system_key: "mika",
+      onboarding_session: { id: "session-1", agent_id: "agent-1", last_message: undefined },
+    });
+  });
+
+  it("falls back to an agent without an onboarding session when the response is malformed", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ id: 42 }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+
+    // The caller (bootstrapMika) treats a missing onboarding_session as the
+    // one recoverable failure and throws its own error, so the fallback must
+    // not fabricate a session — see use-bootstrap-mika.ts.
+    await expect(
+      new ApiClient("https://api.example.test").createMikaAgent({
+        runtime_id: "runtime-1",
+        language: "en",
+      }),
+    ).resolves.toEqual({ id: "" });
+  });
+});
