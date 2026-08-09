@@ -203,6 +203,7 @@ import {
   ChatMessageListSchema,
   ChatMessagesPageSchema,
   ChatPendingTaskSchema,
+  MikaBootstrapResponseSchema,
   PrioritizeQueuedChatTaskResponseSchema,
   SendChatMessageResponseSchema,
   StartMikaOnboardingResponseSchema,
@@ -234,6 +235,7 @@ import {
   EMPTY_CLOUD_RUNTIME_NODE,
   EMPTY_CLOUD_RUNTIME_NODE_LIST,
   EMPTY_CREATE_AGENT_FROM_TEMPLATE_RESPONSE,
+  EMPTY_MIKA_BOOTSTRAP_RESPONSE,
   EMPTY_AGENT_BUILDER_SESSION,
   EMPTY_GROUPED_ISSUES_RESPONSE,
   EMPTY_ISSUE_TABLE_FACETS_RESPONSE,
@@ -1213,11 +1215,17 @@ export class ApiClient {
     },
     workspaceSlug?: string,
   ): Promise<MikaBootstrapResponse> {
-    return this.fetch("/api/agents/mika", {
+    const raw = await this.fetch<unknown>("/api/agents/mika", {
       method: "POST",
       headers: workspaceHeader(workspaceSlug),
       body: JSON.stringify(data),
     });
+    return parseWithFallback(
+      raw,
+      MikaBootstrapResponseSchema,
+      EMPTY_MIKA_BOOTSTRAP_RESPONSE,
+      { endpoint: "POST /api/agents/mika" },
+    );
   }
 
   async createAgentBuilderSession(data: {
