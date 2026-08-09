@@ -78,3 +78,6 @@ data/
 # Python (agent tooling)
 __pycache__/
 *.pyc
+
+# Claude Code cross-project credentials (auto, never commit)
+.claude-creds.json
