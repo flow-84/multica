@@ -70,6 +70,14 @@ export function useIssueRealtime(
     (ws, wsId) => {
       if (!issueId) return;
 
+      // Subscriptions here are per-record: they unsubscribe on
+      // navigate-away (see file header). Any comment/update broadcast
+      // while this screen was unmounted is missed, and TanStack Query's
+      // 60s staleTime then serves the stale cache on remount instead of
+      // refetching. Treat "just (re)subscribed" the same as "just
+      // reconnected" — both mean events may have been missed.
+      invalidateIssueAfterReconnect(qc, wsId, issueId);
+
       const invalidateThisIssue = () => {
         qc.invalidateQueries({ queryKey: issueKeys.detail(wsId, issueId) });
         qc.invalidateQueries({ queryKey: issueKeys.timeline(wsId, issueId) });
