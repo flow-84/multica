@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/multica-ai/multica/server/internal/cli"
+	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 )
 
 // stderrCapture redirects os.Stderr through a pipe so a test can assert on
@@ -2922,6 +2923,7 @@ func newIssueListTestCmd() *cobra.Command {
 	cmd.Flags().String("assignee", "", "")
 	cmd.Flags().String("assignee-id", "", "")
 	cmd.Flags().String("project", "", "")
+	cmd.Flags().Bool("all-projects", false, "")
 	cmd.Flags().StringSlice("metadata", nil, "")
 	cmd.Flags().StringArray("property", nil, "")
 	cmd.Flags().Int("limit", 50, "")
@@ -4152,5 +4154,166 @@ func TestRunIssueRunsWarnsOnTruncatedFamilyRead(t *testing.T) {
 				t.Fatalf("warned = %v, want %v; stderr was %q", warned, tc.truncated, stderr)
 			}
 		})
+	}
+}
+
+// writeProjectContextFile lays down the .multica/project/resources.json the
+// daemon writes into a task working directory, and returns the directory.
+func writeProjectContextFile(t *testing.T, root, projectID, title string) {
+	t.Helper()
+	dir := filepath.Join(root, ".multica", "project")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	payload := fmt.Sprintf(`{"managed_by":%q,"project_id":%q,"project_title":%q,"resources":[]}`,
+		execenv.ProjectResourcesManagedBy, projectID, title)
+	if err := os.WriteFile(filepath.Join(dir, "resources.json"), []byte(payload), 0o644); err != nil {
+		t.Fatalf("write resources.json: %v", err)
+	}
+}
+
+// A chat/task working directory carrying project context must scope
+// `multica issue list` to that project by default, so an agent cannot present
+// a workspace-wide list as the project's state (MS-755).
+func TestRunIssueListDefaultsToActiveProjectContext(t *testing.T) {
+	const projectID = "22222222-3333-4444-5555-666666666666"
+
+	var gotQuery url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/issues" {
+			http.NotFound(w, r)
+			return
+		}
+		gotQuery = r.URL.Query()
+		json.NewEncoder(w).Encode(map[string]any{"issues": []any{}, "total": 0})
+	}))
+	defer srv.Close()
+
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+
+	workdir := t.TempDir()
+	writeProjectContextFile(t, workdir, projectID, "Project Beta")
+	// Run from a checkout below the workdir: the lookup must walk up.
+	nested := filepath.Join(workdir, "repo", "server")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+	t.Chdir(nested)
+
+	t.Run("defaults to the context project", func(t *testing.T) {
+		cmd := newIssueListTestCmd()
+		var errBuf strings.Builder
+		cmd.SetErr(&errBuf)
+		_ = cmd.Flags().Set("output", "json")
+		if err := runIssueList(cmd, nil); err != nil {
+			t.Fatalf("runIssueList: %v", err)
+		}
+		if got := gotQuery.Get("project_id"); got != projectID {
+			t.Fatalf("project_id query = %q, want %q", got, projectID)
+		}
+		if !strings.Contains(errBuf.String(), "Project Beta") {
+			t.Fatalf("stderr = %q, want a note naming the scoped project", errBuf.String())
+		}
+	})
+
+	t.Run("explicit --project wins", func(t *testing.T) {
+		cmd := newIssueListTestCmd()
+		cmd.SetErr(io.Discard)
+		_ = cmd.Flags().Set("output", "json")
+		_ = cmd.Flags().Set("project", "99999999-8888-7777-6666-555555555555")
+		if err := runIssueList(cmd, nil); err != nil {
+			t.Fatalf("runIssueList: %v", err)
+		}
+		if got := gotQuery.Get("project_id"); got != "99999999-8888-7777-6666-555555555555" {
+			t.Fatalf("project_id query = %q, want the explicit flag value", got)
+		}
+	})
+
+	t.Run("--all-projects opts out", func(t *testing.T) {
+		cmd := newIssueListTestCmd()
+		cmd.SetErr(io.Discard)
+		_ = cmd.Flags().Set("output", "json")
+		_ = cmd.Flags().Set("all-projects", "true")
+		if err := runIssueList(cmd, nil); err != nil {
+			t.Fatalf("runIssueList: %v", err)
+		}
+		if gotQuery.Has("project_id") {
+			t.Fatalf("project_id query = %q, want it absent with --all-projects", gotQuery.Get("project_id"))
+		}
+	})
+
+	t.Run("--project with --all-projects is rejected", func(t *testing.T) {
+		cmd := newIssueListTestCmd()
+		cmd.SetErr(io.Discard)
+		_ = cmd.Flags().Set("project", projectID)
+		_ = cmd.Flags().Set("all-projects", "true")
+		err := runIssueList(cmd, nil)
+		if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+			t.Fatalf("error = %v, want a mutual-exclusion error", err)
+		}
+	})
+}
+
+// Without project context the command must stay workspace-wide.
+func TestRunIssueListWithoutProjectContextStaysUnscoped(t *testing.T) {
+	var gotQuery url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query()
+		json.NewEncoder(w).Encode(map[string]any{"issues": []any{}, "total": 0})
+	}))
+	defer srv.Close()
+
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+	t.Chdir(t.TempDir())
+
+	cmd := newIssueListTestCmd()
+	cmd.SetErr(io.Discard)
+	_ = cmd.Flags().Set("output", "json")
+	if err := runIssueList(cmd, nil); err != nil {
+		t.Fatalf("runIssueList: %v", err)
+	}
+	if gotQuery.Has("project_id") {
+		t.Fatalf("project_id query = %q, want it absent without project context", gotQuery.Get("project_id"))
+	}
+}
+
+// A resources.json without the daemon discriminator must not scope anything:
+// a stray file in any ancestor directory would otherwise silently narrow every
+// issue list.
+func TestRunIssueListIgnoresForeignProjectContextFile(t *testing.T) {
+	var gotQuery url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query()
+		json.NewEncoder(w).Encode(map[string]any{"issues": []any{}, "total": 0})
+	}))
+	defer srv.Close()
+
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+
+	workdir := t.TempDir()
+	dir := filepath.Join(workdir, ".multica", "project")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	foreign := `{"project_id":"22222222-3333-4444-5555-666666666666","resources":[]}`
+	if err := os.WriteFile(filepath.Join(dir, "resources.json"), []byte(foreign), 0o644); err != nil {
+		t.Fatalf("write resources.json: %v", err)
+	}
+	t.Chdir(workdir)
+
+	cmd := newIssueListTestCmd()
+	cmd.SetErr(io.Discard)
+	_ = cmd.Flags().Set("output", "json")
+	if err := runIssueList(cmd, nil); err != nil {
+		t.Fatalf("runIssueList: %v", err)
+	}
+	if gotQuery.Has("project_id") {
+		t.Fatalf("project_id query = %q, want it absent for a file without the daemon discriminator", gotQuery.Get("project_id"))
 	}
 }

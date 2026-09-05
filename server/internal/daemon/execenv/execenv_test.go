@@ -7068,3 +7068,49 @@ func TestReleaseLockFreesEnvRootForALaterDispatch(t *testing.T) {
 		t.Fatalf("cleanup after release: %v", err)
 	}
 }
+
+// A chat session with a project context must be told that the project scopes
+// issue queries; the bare `multica issue list` recipe otherwise wins over the
+// context and returns the whole workspace (MS-755).
+func TestChatBriefScopesIssueListToProject(t *testing.T) {
+	t.Parallel()
+
+	scoped := TaskContextForEnv{
+		ChatSessionID: "chat-scope",
+		ProjectID:     "22222222-3333-4444-5555-666666666666",
+		ProjectTitle:  "Project Beta",
+	}
+	dir := t.TempDir()
+	if _, err := InjectRuntimeConfig(dir, "claude", scoped); err != nil {
+		t.Fatalf("InjectRuntimeConfig: %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(dir, "CLAUDE.md"))
+	if err != nil {
+		t.Fatalf("read CLAUDE.md: %v", err)
+	}
+	s := string(content)
+	for _, want := range []string{
+		"multica issue list --project 22222222-3333-4444-5555-666666666666 --output json",
+		"--all-projects",
+		"This project is the scope for issue queries",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("scoped chat brief missing %q", want)
+		}
+	}
+	if strings.Contains(s, "use `multica issue list --output json`") {
+		t.Error("scoped chat brief still teaches the unscoped issue list recipe")
+	}
+
+	unscopedDir := t.TempDir()
+	if _, err := InjectRuntimeConfig(unscopedDir, "claude", TaskContextForEnv{ChatSessionID: "chat-plain"}); err != nil {
+		t.Fatalf("InjectRuntimeConfig: %v", err)
+	}
+	plain, err := os.ReadFile(filepath.Join(unscopedDir, "CLAUDE.md"))
+	if err != nil {
+		t.Fatalf("read CLAUDE.md: %v", err)
+	}
+	if !strings.Contains(string(plain), "use `multica issue list --output json`") {
+		t.Error("project-less chat brief lost the plain issue list recipe")
+	}
+}
