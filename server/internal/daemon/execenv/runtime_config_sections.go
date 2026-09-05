@@ -423,6 +423,9 @@ func writeProjectContext(b *strings.Builder, ctx TaskContextForEnv) {
 	if ctx.ProjectTitle != "" {
 		fmt.Fprintf(b, "The active project for this task is **%s**.\n\n", ctx.ProjectTitle)
 	}
+	if ctx.ProjectID != "" {
+		fmt.Fprintf(b, "This project is the scope for issue queries, not just background information: `multica issue list` defaults to project `%s` here, and results from other projects require an explicit `--all-projects`. Never present a workspace-wide list as this project's state.\n\n", ctx.ProjectID)
+	}
 	if desc := strings.TrimSpace(ctx.ProjectDescription); desc != "" {
 		b.WriteString("Project description — durable context the project owner set for work in this project:\n\n")
 		b.WriteString(desc)
@@ -546,11 +549,15 @@ func writeWorkflowHeader(b *strings.Builder) {
 // Room shape is run context rather than an agent/provider invariant, so it is
 // emitted by daemon.BuildPrompt instead of fragmenting this cached brief across
 // group, direct, and unknown-audience chat sessions (MUL-5377, MUL-5442).
-func writeWorkflowChat(b *strings.Builder) {
+func writeWorkflowChat(b *strings.Builder, ctx TaskContextForEnv) {
 	b.WriteString("**You are in chat mode.**\n\n")
 	b.WriteString("- Respond conversationally and helpfully to the user's message\n")
 	b.WriteString("- You have full access to the `multica` CLI to look up issues, workspace info, members, agents, etc.\n")
-	b.WriteString("- If asked about issues, use `multica issue list --output json` or `multica issue get <id> --output json`\n")
+	if ctx.ProjectID != "" {
+		fmt.Fprintf(b, "- If asked about issues, use `multica issue list --project %s --output json` or `multica issue get <id> --output json`. `issue list` scopes to this project by default; add `--all-projects` ONLY when the user explicitly asks about the whole workspace, and say so in your answer when you do\n", ctx.ProjectID)
+	} else {
+		b.WriteString("- If asked about issues, use `multica issue list --output json` or `multica issue get <id> --output json`\n")
+	}
 	b.WriteString("- If asked about the workspace, use `multica workspace get --output json`\n")
 	b.WriteString("- If asked to perform actions (create issues, update status, etc.), use the appropriate CLI commands\n")
 	b.WriteString("- If the task requires code changes, use `multica repo checkout <url>` to get the code first. Use `--ref <branch-or-sha>` when you need an exact revision\n")
@@ -1022,7 +1029,7 @@ func buildMetaSkillContentSlim(provider string, ctx TaskContextForEnv) string {
 	writeWorkflowHeader(&b)
 	switch kind {
 	case kindChat:
-		writeWorkflowChat(&b)
+		writeWorkflowChat(&b, ctx)
 	case kindQuickCreate:
 		writeWorkflowQuickCreate(&b)
 	case kindAutopilotRunOnly:
