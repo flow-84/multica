@@ -18,6 +18,11 @@ import (
 // sandbox strips all MULTICA_* env vars before invoking `multica`.
 const TaskContextMarkerRelPath = ".multica/daemon_task_context.json"
 
+// ProjectResourcesRelPath is the workdir-relative path of the project context
+// sidecar written by writeProjectResources. The CLI reads it to scope project
+// aware commands, so both sides share this constant.
+const ProjectResourcesRelPath = ".multica/project/resources.json"
+
 // TaskContextMarkerManagedBy is the marker discriminator the CLI checks before
 // treating TaskContextMarkerRelPath as daemon-owned.
 const TaskContextMarkerManagedBy = "multica-daemon-task"
@@ -284,7 +289,8 @@ func writeProjectResources(workDir string, ctx TaskContextForEnv, manifest *side
 	if ctx.ProjectID == "" && len(ctx.ProjectResources) == 0 {
 		return nil
 	}
-	dir := filepath.Join(workDir, ".multica", "project")
+	path := filepath.Join(workDir, filepath.FromSlash(ProjectResourcesRelPath))
+	dir := filepath.Dir(path)
 	if err := recordMkdirAll(dir, 0o755, manifest); err != nil {
 		return err
 	}
@@ -302,7 +308,7 @@ func writeProjectResources(workDir string, ctx TaskContextForEnv, manifest *side
 	if err != nil {
 		return err
 	}
-	if err := recordWriteFile(filepath.Join(dir, "resources.json"), data, 0o644, manifest); err != nil {
+	if err := recordWriteFile(path, data, 0o644, manifest); err != nil {
 		// .multica/project/resources.json is Multica-owned and a
 		// pre-existing path is almost certainly user content the
 		// manifest must not destroy. The runtime brief already lists

@@ -451,7 +451,8 @@ func init() {
 	issueListCmd.Flags().String("priority", "", "Filter by priority")
 	issueListCmd.Flags().String("assignee", "", "Filter by assignee name (member, agent, or squad; fuzzy match)")
 	issueListCmd.Flags().String("assignee-id", "", "Filter by assignee UUID — member, agent, or squad (mutually exclusive with --assignee)")
-	issueListCmd.Flags().String("project", "", "Filter by project ID")
+	issueListCmd.Flags().String("project", "", "Filter by project ID (defaults to the task's active project when .multica/project/resources.json is present)")
+	issueListCmd.Flags().Bool("all-projects", false, "List issues across every project, ignoring the task's active project context")
 	issueListCmd.Flags().StringSlice("metadata", nil, "Filter by metadata key=value (repeatable; combined with AND). Value is JSON-parsed: 'true'/'false' → bool, numbers → number, otherwise string. Wrap as '\"42\"' to force a string when the value would otherwise sniff as a number.")
 	issueListCmd.Flags().Int("limit", 50, "Maximum number of issues to return")
 	issueListCmd.Flags().Int("offset", 0, "Number of issues to skip (for pagination)")
@@ -619,12 +620,32 @@ func runIssueList(cmd *cobra.Command, _ []string) error {
 	if v, _ := cmd.Flags().GetInt("offset"); v > 0 {
 		params.Set("offset", fmt.Sprintf("%d", v))
 	}
-	if v, _ := cmd.Flags().GetString("project"); v != "" {
-		project, err := resolveProjectID(ctx, client, v)
+	projectRef, _ := cmd.Flags().GetString("project")
+	allProjects, _ := cmd.Flags().GetBool("all-projects")
+	if projectRef != "" && allProjects {
+		return fmt.Errorf("--project and --all-projects are mutually exclusive")
+	}
+	scopedFromContext := projectContextFile{}
+	if projectRef == "" && !allProjects {
+		if pc := activeProjectContext(); pc.ProjectID != "" {
+			projectRef = pc.ProjectID
+			scopedFromContext = pc
+		}
+	}
+	if projectRef != "" {
+		project, err := resolveProjectID(ctx, client, projectRef)
 		if err != nil {
 			return err
 		}
 		params.Set("project_id", project.ID)
+		if scopedFromContext.ProjectID != "" {
+			label := scopedFromContext.ProjectTitle
+			if label == "" {
+				label = scopedFromContext.ProjectID
+			}
+			// stderr, so JSON consumers of stdout stay parseable.
+			fmt.Fprintf(cmd.ErrOrStderr(), "Scoped to the active project %q; pass --all-projects to list the whole workspace.\n", label)
+		}
 	}
 	if mdFlags, _ := cmd.Flags().GetStringSlice("metadata"); len(mdFlags) > 0 {
 		filter, err := buildMetadataFilterQueryParam(mdFlags)
