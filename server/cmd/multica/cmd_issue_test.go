@@ -4154,3 +4154,62 @@ func TestRunIssueRunsWarnsOnTruncatedFamilyRead(t *testing.T) {
 		})
 	}
 }
+
+// A mention on an archived agent is saved but never enqueues a run (MS-777).
+// The author only learns that from the stderr warning, so it must name the
+// target and the reason, and must not appear for outcomes that do run.
+func TestWarnUntriggeredMentions(t *testing.T) {
+	tests := []struct {
+		name     string
+		result   map[string]any
+		wantHas  []string
+		wantNone []string
+	}{
+		{
+			name: "blocked archived agent warns",
+			result: map[string]any{"trigger_outcomes": []any{
+				map[string]any{"target_type": "agent", "target_id": "d2a54ae6", "status": "blocked", "reason_code": "target_unavailable"},
+			}},
+			wantHas: []string{"warning:", "agent/d2a54ae6", "target_unavailable", "archived", "No run was enqueued"},
+		},
+		{
+			name: "queued and coalesced stay silent",
+			result: map[string]any{"trigger_outcomes": []any{
+				map[string]any{"target_type": "agent", "target_id": "a1", "status": "queued", "reason_code": "queued"},
+				map[string]any{"target_type": "squad", "target_id": "s1", "status": "coalesced", "reason_code": "coalesced"},
+				map[string]any{"target_type": "agent", "target_id": "a2", "status": "deferred", "reason_code": "deferred"},
+			}},
+			wantNone: []string{"warning:"},
+		},
+		{
+			name: "unknown reason code still warns with the raw code",
+			result: map[string]any{"trigger_outcomes": []any{
+				map[string]any{"target_type": "agent", "target_id": "a3", "status": "blocked", "reason_code": "future_reason"},
+			}},
+			wantHas: []string{"warning:", "agent/a3", "future_reason"},
+		},
+		{
+			name:     "response without trigger_outcomes is silent",
+			result:   map[string]any{"id": "c1"},
+			wantNone: []string{"warning:"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf strings.Builder
+			warnUntriggeredMentions(&buf, tc.result)
+			got := buf.String()
+			for _, want := range tc.wantHas {
+				if !strings.Contains(got, want) {
+					t.Errorf("warning missing %q; got %q", want, got)
+				}
+			}
+			for _, unwanted := range tc.wantNone {
+				if strings.Contains(got, unwanted) {
+					t.Errorf("warning unexpectedly contains %q; got %q", unwanted, got)
+				}
+			}
+		})
+	}
+}
