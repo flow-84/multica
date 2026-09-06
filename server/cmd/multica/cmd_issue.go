@@ -2103,12 +2103,63 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Fprintf(os.Stderr, "Comment added to issue %s.\n", issueRef.Display)
+	warnUntriggeredMentions(os.Stderr, result)
 
 	output, _ := cmd.Flags().GetString("output")
 	if output == "table" {
 		return nil
 	}
 	return cli.PrintJSON(os.Stdout, result)
+}
+
+// untriggeredMentionReasons explains the blocked trigger_outcomes reason codes a
+// comment author can act on. A code missing here still warns, with the raw code
+// as its explanation, so a reason added by a newer backend is never swallowed.
+var untriggeredMentionReasons = map[string]string{
+	"target_unavailable":      "the target is archived or no longer exists",
+	"self_trigger_suppressed": "the mention names the agent that authored this comment",
+	"already_active":          "the target already has an active run on this issue",
+	"runtime_offline":         "the target's runtime is offline",
+	"invocation_not_allowed":  "you are not allowed to invoke this target",
+	"agent_runtime_required":  "the target has no runtime bound",
+	"runtime_unusable":        "the target's runtime cannot run its CLI",
+	"attribution_blocked":     "the mention could not be attributed to an invoking user",
+	"quota_exceeded":          "the workspace run quota is exhausted",
+	"issue_limit_reached":     "this issue reached its concurrent run limit",
+	"internal_error":          "the server failed to evaluate the mention",
+}
+
+// warnUntriggeredMentions prints one stderr line per explicit @agent / @squad
+// mention that the server saved but did NOT turn into a run (MS-777). A mention
+// is a side-effecting action, so an author who never learns it was dropped waits
+// for a result that can never arrive — the archived-agent case is invisible in
+// the posted comment itself. Only "blocked" outcomes warn: queued, coalesced and
+// deferred all end in a run. Warnings go to stderr so `--output json` stdout
+// stays machine-parseable.
+func warnUntriggeredMentions(w io.Writer, result map[string]any) {
+	outcomes, ok := result["trigger_outcomes"].([]any)
+	if !ok {
+		return
+	}
+	for _, raw := range outcomes {
+		outcome, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		status, _ := outcome["status"].(string)
+		if status != "blocked" {
+			continue
+		}
+		targetType, _ := outcome["target_type"].(string)
+		targetID, _ := outcome["target_id"].(string)
+		reason, _ := outcome["reason_code"].(string)
+		explanation, known := untriggeredMentionReasons[reason]
+		if !known {
+			explanation = reason
+		}
+		fmt.Fprintf(w, "warning: mention %s/%s was not triggered (%s): %s. No run was enqueued.\n",
+			targetType, targetID, reason, explanation)
+	}
 }
 
 func runIssueCommentDelete(cmd *cobra.Command, args []string) error {

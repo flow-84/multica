@@ -119,7 +119,10 @@ never parsed is a truly silent no-op. One that parsed and was refused comes back
 in `trigger_outcomes` as `status: "blocked"` with a `reason_code`. One whose
 target is already busy comes back `coalesced` or `deferred`: no second run, but
 your comment IS folded into the task that is already running, so it still gets
-read. Read that array after posting — it is the only place any of this shows up.
+read. Read that array after posting. `multica issue comment add` also prints one
+`warning: mention <type>/<id> was not triggered (<reason_code>)` line on stderr
+per blocked outcome, so an author who never inspects the JSON still learns that
+nobody was woken; `--output json` stdout is unchanged.
 
 - **A name where a UUID belongs.** `mention://member/Alice` is dead. The id
   group accepts only hex+dashes or `all`; the non-hex letters in a typical name
