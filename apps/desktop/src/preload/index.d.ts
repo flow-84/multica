@@ -47,6 +47,11 @@ interface DesktopAPI {
   onInviteOpen: (callback: (invitationId: string) => void) => () => void;
   /** Open a URL in the default browser. */
   openExternal: (url: string) => Promise<void>;
+  /** macOS system-voice read-aloud; undefined on other platforms. */
+  speech?: {
+    speak: (text: string) => Promise<void>;
+    stop: () => Promise<void>;
+  };
   /** Download a file by URL through Electron's native download system.
    *  Shows a native save dialog. On non-desktop platforms this is undefined. */
   downloadURL: (url: string) => Promise<void>;

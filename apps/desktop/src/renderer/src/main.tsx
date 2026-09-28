@@ -1,6 +1,7 @@
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import { AppCrashBoundary } from "./components/app-crash-boundary";
+import { setSpeechBackend } from "@multica/views/speech";
 // Inter variable font covers all weights (100-900) in a single file.
 // CJK is handled by system font fallback (see globals.css --font-sans chain).
 // Keep font stack in sync with apps/web/app/layout.tsx.
@@ -36,6 +37,16 @@ if (import.meta.env.DEV && import.meta.env.VITE_REACT_GRAB) {
   grab.src = "//unpkg.com/react-grab/dist/index.global.js";
   grab.crossOrigin = "anonymous";
   document.head.appendChild(grab);
+}
+
+// Read aloud with the macOS system voice (the user's Spoken Content choice,
+// which may be a Siri voice) instead of Chromium's reduced voice list.
+const nativeSpeech = window.desktopAPI?.speech;
+if (nativeSpeech) {
+  setSpeechBackend({
+    speak: (text) => nativeSpeech.speak(text),
+    stop: () => void nativeSpeech.stop(),
+  });
 }
 
 ReactDOM.createRoot(document.getElementById("root")!).render(

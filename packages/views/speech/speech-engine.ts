@@ -1,5 +1,14 @@
 import { useSpeechStore } from "@multica/core/speech";
 
+/**
+ * Speaks one text to the end. `speak` resolves when playback finished or was
+ * stopped; `stop` interrupts whatever is playing.
+ */
+export interface SpeechBackend {
+  speak: (text: string) => Promise<void>;
+  stop: () => void;
+}
+
 interface SpeechItem {
   id: string;
   text: string;
@@ -9,19 +18,10 @@ interface SpeechItem {
 // answers are spoken as a sequence of sentence-sized utterances.
 const MAX_CHUNK_LENGTH = 220;
 
-const queue: SpeechItem[] = [];
-// Bumped on every stop. `cancel()` fires end/error callbacks on utterances
-// that were still pending; comparing generations ignores those stale events.
-let generation = 0;
-
 function synth(): SpeechSynthesis | null {
   return typeof window !== "undefined" && "speechSynthesis" in window
     ? window.speechSynthesis
     : null;
-}
-
-export function isSpeechSupported(): boolean {
-  return synth() !== null;
 }
 
 function splitIntoChunks(text: string): string[] {
@@ -49,31 +49,66 @@ function pickVoice(s: SpeechSynthesis, lang: string): SpeechSynthesisVoice | nul
   );
 }
 
+const browserBackend: SpeechBackend = {
+  speak: (text) =>
+    new Promise<void>((resolve) => {
+      const s = synth();
+      if (!s) return resolve();
+      const lang = navigator.language || "en-US";
+      const voice = pickVoice(s, lang);
+      const chunks = splitIntoChunks(text);
+      chunks.forEach((chunk, index) => {
+        const utterance = new SpeechSynthesisUtterance(chunk);
+        utterance.lang = voice?.lang ?? lang;
+        if (voice) utterance.voice = voice;
+        if (index === chunks.length - 1) {
+          utterance.onend = () => resolve();
+          utterance.onerror = () => resolve();
+        }
+        s.speak(utterance);
+      });
+    }),
+  stop: () => synth()?.cancel(),
+};
+
+let backend: SpeechBackend | null = null;
+
+/**
+ * Platforms with a better voice than the browser's (desktop uses the macOS
+ * system voice, which can be a Siri voice) install their backend at startup.
+ */
+export function setSpeechBackend(next: SpeechBackend | null): void {
+  backend = next;
+}
+
+function activeBackend(): SpeechBackend | null {
+  return backend ?? (synth() ? browserBackend : null);
+}
+
+export function isSpeechSupported(): boolean {
+  return activeBackend() !== null;
+}
+
+const queue: SpeechItem[] = [];
+// Bumped on every stop. A stopped backend still resolves its pending
+// `speak`; comparing generations keeps that from starting the next item.
+let generation = 0;
+
 function playNext(): void {
-  const s = synth();
+  const b = activeBackend();
   const item = queue.shift();
-  if (!s || !item) {
+  if (!b || !item) {
     useSpeechStore.getState().setSpeakingId(null);
     return;
   }
   useSpeechStore.getState().setSpeakingId(item.id);
   const current = generation;
-  const lang = navigator.language || "en-US";
-  const voice = pickVoice(s, lang);
-  const chunks = splitIntoChunks(item.text);
-  chunks.forEach((chunk, index) => {
-    const utterance = new SpeechSynthesisUtterance(chunk);
-    utterance.lang = voice?.lang ?? lang;
-    if (voice) utterance.voice = voice;
-    if (index === chunks.length - 1) {
-      const done = () => {
-        if (current === generation) playNext();
-      };
-      utterance.onend = done;
-      utterance.onerror = done;
-    }
-    s.speak(utterance);
-  });
+  void b
+    .speak(item.text)
+    .catch(() => undefined)
+    .then(() => {
+      if (current === generation) playNext();
+    });
 }
 
 /** Stop whatever is playing, drop the queue, and speak `text` now. */
@@ -86,7 +121,7 @@ export function speak(id: string, text: string): void {
 
 /** Speak `text` after everything already queued. */
 export function enqueue(id: string, text: string): void {
-  if (!text.trim() || !synth()) return;
+  if (!text.trim() || !activeBackend()) return;
   queue.push({ id, text });
   if (useSpeechStore.getState().speakingId === null) playNext();
 }
@@ -94,6 +129,6 @@ export function enqueue(id: string, text: string): void {
 export function stopSpeaking(): void {
   generation += 1;
   queue.length = 0;
-  synth()?.cancel();
+  activeBackend()?.stop();
   useSpeechStore.getState().setSpeakingId(null);
 }

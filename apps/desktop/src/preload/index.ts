@@ -149,6 +149,15 @@ const desktopAPI = {
     subscribeToMainRendererChannel("invite:open", callback),
   /** Open a URL in the default browser */
   openExternal: (url: string) => ipcRenderer.invoke("shell:openExternal", url),
+  /** Read-aloud through the macOS system voice (Spoken Content, incl. Siri).
+   *  Undefined off macOS, where the renderer keeps browser speech. */
+  speech:
+    process.platform === "darwin"
+      ? {
+          speak: (text: string): Promise<void> => ipcRenderer.invoke("speech:speak", text),
+          stop: (): Promise<void> => ipcRenderer.invoke("speech:stop"),
+        }
+      : undefined,
   /** Download a file by URL through Electron's native download system.
    *  Shows a save dialog and saves to disk. Unlike openExternal, this
    *  avoids browser rendering of HTML files on Linux.
