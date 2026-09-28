@@ -58,6 +58,12 @@ export function useSettingsSearchIndex(
       },
       {
         tab: "preferences",
+        anchor: "auto-read-agent-answers",
+        title: t(($) => $.preferences.auto_read_agent_answers.title),
+        description: t(($) => $.preferences.auto_read_agent_answers.hint),
+      },
+      {
+        tab: "preferences",
         anchor: "running-agent-reply",
         title: t(($) => $.preferences.running_agent_reply.title),
         description: t(($) => $.preferences.running_agent_reply.hint),

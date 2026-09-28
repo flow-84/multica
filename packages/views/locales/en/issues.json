@@ -1436,5 +1436,14 @@
     "overview_close": "Close",
     "overview_empty": "No deliverables of this type.",
     "group_comment_by": "Comment by {{name}}"
+  },
+  "speech": {
+    "read_aloud": "Read aloud",
+    "stop_reading": "Stop reading",
+    "read_latest_answer": "Read latest agent answer aloud",
+    "auto_read_on": "Auto-read new agent answers",
+    "auto_read_off": "Stop auto-reading new agent answers",
+    "new_answer_on": "New answer on {{identifier}}.",
+    "new_answer": "New answer."
   }
 }

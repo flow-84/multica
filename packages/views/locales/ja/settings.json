@@ -178,6 +178,10 @@
     "sticky_comment_bar": {
       "title": "コメント欄を下部に固定"
     },
+    "auto_read_agent_answers": {
+      "title": "新しいエージェント回答を読み上げる",
+      "hint": "このワークスペースの新しいエージェントコメントを、届いた順に読み上げます。"
+    },
     "running_agent_reply": {
       "title": "実行中のエージェントに返信するとき",
       "steer": "現在の実行に追加",
@@ -248,6 +252,10 @@
       "findInIssue": {
         "label": "タスク内を検索",
         "description": "開いているタスクの詳細を検索します。"
+      },
+      "readLatestAnswer": {
+        "label": "最新の回答を読み上げ",
+        "description": "開いている課題の最新のエージェントコメントを読み上げます。もう一度押すと停止します。"
       },
       "archiveInboxItem": {
         "label": "通知をアーカイブ",

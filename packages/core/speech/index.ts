@@ -1,0 +1,1 @@
+export { useSpeechStore } from "./store";

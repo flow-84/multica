@@ -1389,5 +1389,14 @@
     "overview_close": "关闭",
     "overview_empty": "没有这类产物。",
     "group_comment_by": "{{name}} 的评论"
+  },
+  "speech": {
+    "read_aloud": "朗读",
+    "stop_reading": "停止朗读",
+    "read_latest_answer": "朗读最新的智能体回复",
+    "auto_read_on": "自动朗读新的智能体回复",
+    "auto_read_off": "停止自动朗读新的智能体回复",
+    "new_answer_on": "{{identifier}} 有新回复。",
+    "new_answer": "新回复。"
   }
 }

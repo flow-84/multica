@@ -1389,5 +1389,14 @@
     "overview_close": "閉じる",
     "overview_empty": "この種類の成果物はありません。",
     "group_comment_by": "{{name}} のコメント"
+  },
+  "speech": {
+    "read_aloud": "読み上げ",
+    "stop_reading": "読み上げを停止",
+    "read_latest_answer": "最新のエージェント回答を読み上げ",
+    "auto_read_on": "新しいエージェント回答を自動で読み上げ",
+    "auto_read_off": "新しいエージェント回答の自動読み上げを停止",
+    "new_answer_on": "{{identifier}} に新しい回答。",
+    "new_answer": "新しい回答。"
   }
 }

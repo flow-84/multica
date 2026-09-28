@@ -179,6 +179,10 @@
     "sticky_comment_bar": {
       "title": "Pin comment bar to bottom"
     },
+    "auto_read_agent_answers": {
+      "title": "Read new agent answers aloud",
+      "hint": "Speaks every new agent comment in this workspace as it arrives, one after another."
+    },
     "running_agent_reply": {
       "title": "When replying to a running agent",
       "steer": "Add to current run",
@@ -249,6 +253,10 @@
       "findInIssue": {
         "label": "Find in issue",
         "description": "Search within the open issue detail."
+      },
+      "readLatestAnswer": {
+        "label": "Read latest answer aloud",
+        "description": "Reads the newest agent comment of the open issue. Press again to stop."
       },
       "archiveInboxItem": {
         "label": "Archive notification",

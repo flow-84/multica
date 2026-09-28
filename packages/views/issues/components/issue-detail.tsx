@@ -161,6 +161,7 @@ import {
   useViewStateWriter,
 } from "../../platform";
 import { cn } from "@multica/ui/lib/utils";
+import { IssueReadAloudControls } from "../../speech/issue-read-aloud-controls";
 import { PAGE_GUTTER } from "../../layout/page-header";
 
 import { ProgressRing } from "./progress-ring";
@@ -3198,6 +3199,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                 <TooltipContent side="bottom">{t(($) => $.detail.archive_tooltip)}</TooltipContent>
               </Tooltip>
             )}
+            <IssueReadAloudControls timeline={timeline} />
             <Tooltip>
               <TooltipTrigger
                 render={

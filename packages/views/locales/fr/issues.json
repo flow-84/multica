@@ -1436,5 +1436,14 @@
     "overview_close": "Fermer",
     "overview_empty": "Aucun livrable de ce type.",
     "group_comment_by": "Commentaire de {{name}}"
+  },
+  "speech": {
+    "read_aloud": "Lire à voix haute",
+    "stop_reading": "Arrêter la lecture",
+    "read_latest_answer": "Lire la dernière réponse de l'agent",
+    "auto_read_on": "Lire automatiquement les nouvelles réponses des agents",
+    "auto_read_off": "Ne plus lire automatiquement les nouvelles réponses",
+    "new_answer_on": "Nouvelle réponse sur {{identifier}}.",
+    "new_answer": "Nouvelle réponse."
   }
 }

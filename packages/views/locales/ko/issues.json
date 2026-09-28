@@ -1389,5 +1389,14 @@
     "overview_close": "닫기",
     "overview_empty": "이 유형의 산출물이 없습니다.",
     "group_comment_by": "{{name}}의 댓글"
+  },
+  "speech": {
+    "read_aloud": "소리 내어 읽기",
+    "stop_reading": "읽기 중지",
+    "read_latest_answer": "최신 에이전트 답변 읽기",
+    "auto_read_on": "새 에이전트 답변 자동 읽기",
+    "auto_read_off": "새 에이전트 답변 자동 읽기 중지",
+    "new_answer_on": "{{identifier}}에 새 답변.",
+    "new_answer": "새 답변."
   }
 }

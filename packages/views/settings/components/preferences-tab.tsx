@@ -33,6 +33,7 @@ import {
 import { useLocaleAdapter } from "@multica/core/i18n/react";
 import { useAuthStore } from "@multica/core/auth";
 import { useChatStore } from "@multica/core/chat";
+import { useSpeechStore } from "@multica/core/speech";
 import {
   useCommentComposerStore,
   type RunningAgentReply,
@@ -98,6 +99,7 @@ export function PreferencesTab() {
       >
         <SettingsCard>
           <StickyCommentBarRow />
+          <AutoReadAgentAnswersRow />
           <RunningAgentReplyRow />
           <FloatingChatRow />
         </SettingsCard>
@@ -248,6 +250,26 @@ function StickyCommentBarRow() {
         checked={sticky}
         onCheckedChange={() => toggleSticky()}
         aria-label={t(($) => $.preferences.sticky_comment_bar.title)}
+      />
+    </SettingsRow>
+  );
+}
+
+function AutoReadAgentAnswersRow() {
+  const { t } = useT("settings");
+  const autoRead = useSpeechStore((s) => s.autoRead);
+  const toggleAutoRead = useSpeechStore((s) => s.toggleAutoRead);
+
+  return (
+    <SettingsRow
+      anchor="auto-read-agent-answers"
+      label={t(($) => $.preferences.auto_read_agent_answers.title)}
+      description={t(($) => $.preferences.auto_read_agent_answers.hint)}
+    >
+      <Switch
+        checked={autoRead}
+        onCheckedChange={() => toggleAutoRead()}
+        aria-label={t(($) => $.preferences.auto_read_agent_answers.title)}
       />
     </SettingsRow>
   );

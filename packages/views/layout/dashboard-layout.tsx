@@ -8,6 +8,7 @@ import { AppSidebar } from "./app-sidebar";
 import { DashboardGuard } from "./dashboard-guard";
 import { NavigationProgress } from "./navigation-progress";
 import { WorkspacePresencePrefetch } from "./workspace-presence-prefetch";
+import { AutoReadAgentAnswers } from "../speech/auto-read-agent-answers";
 import { GlobalShortcuts } from "./global-shortcuts";
 
 interface DashboardLayoutProps {
@@ -37,6 +38,7 @@ export function DashboardLayout({
       <SidebarProvider className="h-svh bg-app-shell">
         <GlobalShortcuts />
         <WorkspacePresencePrefetch />
+        <AutoReadAgentAnswers />
         <AppSidebar searchSlot={searchSlot} />
         <SidebarInset className="relative overflow-hidden">
           <NavigationProgress />

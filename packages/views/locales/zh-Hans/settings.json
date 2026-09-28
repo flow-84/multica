@@ -178,6 +178,10 @@
     "sticky_comment_bar": {
       "title": "固定底部评论栏"
     },
+    "auto_read_agent_answers": {
+      "title": "朗读新的智能体回复",
+      "hint": "工作区中每条新的智能体评论到达时依次朗读。"
+    },
     "running_agent_reply": {
       "title": "回复正在运行的智能体时",
       "steer": "插话到当前运行",
@@ -248,6 +252,10 @@
       "findInIssue": {
         "label": "在任务中查找",
         "description": "搜索当前打开的任务详情。"
+      },
+      "readLatestAnswer": {
+        "label": "朗读最新回复",
+        "description": "朗读当前打开事项中最新的智能体评论。再次按下即停止。"
       },
       "archiveInboxItem": {
         "label": "归档通知",
