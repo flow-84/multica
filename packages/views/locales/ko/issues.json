@@ -1111,5 +1111,14 @@
     "issue_disabled_action": "다시 켜기",
     "workspace_disabled": "이 워크스페이스는 PR 자동 완료가 꺼져 있습니다",
     "workspace_disabled_action": "설정"
+  },
+  "speech": {
+    "read_aloud": "소리 내어 읽기",
+    "stop_reading": "읽기 중지",
+    "read_latest_answer": "최신 에이전트 답변 읽기",
+    "auto_read_on": "새 에이전트 답변 자동 읽기",
+    "auto_read_off": "새 에이전트 답변 자동 읽기 중지",
+    "new_answer_on": "{{identifier}}에 새 답변.",
+    "new_answer": "새 답변."
   }
 }

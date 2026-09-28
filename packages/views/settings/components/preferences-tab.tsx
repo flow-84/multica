@@ -19,6 +19,7 @@ import {
 import { useLocaleAdapter } from "@multica/core/i18n/react";
 import { useAuthStore } from "@multica/core/auth";
 import { useCommentComposerStore } from "@multica/core/issues/stores";
+import { useSpeechStore } from "@multica/core/speech";
 import { api } from "@multica/core/api";
 import { browserTimezone, timezoneOptions } from "../../common/timezone-select";
 import {
@@ -241,6 +242,7 @@ function GeneralPreferences() {
       >
         <SettingsCard>
           <StickyCommentBarRow />
+          <AutoReadAgentAnswersRow />
         </SettingsCard>
       </SettingsSection>
     </>
@@ -365,6 +367,25 @@ function TimezoneRow() {
           ))}
         </SelectContent>
       </Select>
+    </SettingsRow>
+  );
+}
+
+function AutoReadAgentAnswersRow() {
+  const { t } = useT("settings");
+  const autoRead = useSpeechStore((s) => s.autoRead);
+  const toggleAutoRead = useSpeechStore((s) => s.toggleAutoRead);
+
+  return (
+    <SettingsRow
+      label={t(($) => $.preferences.auto_read_agent_answers.title)}
+      description={t(($) => $.preferences.auto_read_agent_answers.hint)}
+    >
+      <Switch
+        checked={autoRead}
+        onCheckedChange={() => toggleAutoRead()}
+        aria-label={t(($) => $.preferences.auto_read_agent_answers.title)}
+      />
     </SettingsRow>
   );
 }

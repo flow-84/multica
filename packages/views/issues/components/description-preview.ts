@@ -8,16 +8,12 @@ import { stripChannelMediaMarkers } from "@multica/core/types";
 const PREVIEW_MAX_LENGTH = 300;
 
 /**
- * Flatten description Markdown into a one-line plain-text preview. Shared by
- * every surface that shows a description snippet next to an issue.
- *
- * Channel-media provenance is server-owned merge metadata, not authored
- * content, so it is stripped first: the image Markdown it annotates is removed
- * a line below, and without this the bare HTML comment survives every
- * remaining pass and becomes visible preview text.
+ * Strip inline Markdown syntax (escapes, images, file cards, link targets,
+ * emphasis, heading/quote markers) while keeping the line structure. Shared by
+ * the one-line preview below and the read-aloud text.
  */
-export function descriptionPreview(markdown: string): string {
-  const preview = (
+export function stripInlineMarkdown(markdown: string): string {
+  return (
     stripChannelMediaMarkers(markdown)
       // Backslash-escaped punctuation is unescaped first, and the order is
       // load-bearing. The editor serializes a link as `\[label\](url)`, so the
@@ -40,9 +36,20 @@ export function descriptionPreview(markdown: string): string {
       .replace(/\[([^\]]+)\]\((?:[^()]|\([^()]*\))*\)/g, "$1")
       .replace(/[*_`~]+/g, "")
       .replace(/^[\s>#]+/gm, "")
-      .replace(/\s+/g, " ")
-      .trim()
   );
+}
+
+/**
+ * Flatten description Markdown into a one-line plain-text preview. Shared by
+ * every surface that shows a description snippet next to an issue.
+ *
+ * Channel-media provenance is server-owned merge metadata, not authored
+ * content, so it is stripped first: the image Markdown it annotates is removed
+ * a line below, and without this the bare HTML comment survives every
+ * remaining pass and becomes visible preview text.
+ */
+export function descriptionPreview(markdown: string): string {
+  const preview = stripInlineMarkdown(markdown).replace(/\s+/g, " ").trim();
 
   if (preview.length <= PREVIEW_MAX_LENGTH) return preview;
 

@@ -95,6 +95,7 @@ vi.mock("@multica/views/workspace/welcome-after-onboarding", () => ({
 
 vi.mock("@multica/views/layout", () => ({
   WorkspacePresencePrefetch: () => null,
+  AutoReadAgentAnswers: () => null,
 }));
 
 // The point of this whole test: assert the desktop layout mounts the

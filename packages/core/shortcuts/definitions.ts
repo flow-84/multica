@@ -12,6 +12,7 @@ export type ShortcutActionId =
   | "toggleRightSidebar"
   | "toggleChat"
   | "findInIssue"
+  | "readLatestAnswer"
   | "archiveInboxItem"
   | "send"
   | "goBack"
@@ -94,6 +95,13 @@ export const SHORTCUT_ACTIONS: readonly ShortcutActionDefinition[] = [
   // to keep working while the caret sits in the chat composer itself.
   { id: "toggleChat", category: "general", defaultShortcut: primary("J"), allowInEditable: true },
   { id: "findInIssue", category: "general", defaultShortcut: primary("F"), allowInEditable: true },
+  // Not in editors: Mod+Shift+S is the editor's strikethrough binding.
+  {
+    id: "readLatestAnswer",
+    category: "general",
+    defaultShortcut: createShortcutChord("S", { primary: true, shift: true }),
+    allowInEditable: false,
+  },
   {
     id: "archiveInboxItem",
     category: "general",

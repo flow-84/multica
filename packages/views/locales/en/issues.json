@@ -1143,5 +1143,14 @@
     "issue_disabled_action": "Turn on",
     "workspace_disabled": "PR auto-complete is off for this workspace",
     "workspace_disabled_action": "Settings"
+  },
+  "speech": {
+    "read_aloud": "Read aloud",
+    "stop_reading": "Stop reading",
+    "read_latest_answer": "Read latest agent answer aloud",
+    "auto_read_on": "Auto-read new agent answers",
+    "auto_read_off": "Stop auto-reading new agent answers",
+    "new_answer_on": "New answer on {{identifier}}.",
+    "new_answer": "New answer."
   }
 }

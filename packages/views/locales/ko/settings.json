@@ -168,6 +168,10 @@
     "sticky_comment_bar": {
       "title": "댓글 입력란을 하단에 고정"
     },
+    "auto_read_agent_answers": {
+      "title": "새 에이전트 답변 소리 내어 읽기",
+      "hint": "이 워크스페이스의 새 에이전트 댓글을 도착하는 순서대로 읽어 줍니다."
+    },
     "issue_title": "태스크 생성",
     "comments_title": "댓글",
     "device_hint": "현재 기기에 저장됩니다.",
@@ -226,6 +230,10 @@
       "findInIssue": {
         "label": "태스크에서 찾기",
         "description": "열린 태스크 상세 내용에서 검색합니다."
+      },
+      "readLatestAnswer": {
+        "label": "최신 답변 읽기",
+        "description": "열린 이슈의 최신 에이전트 댓글을 읽습니다. 다시 누르면 멈춥니다."
       },
       "archiveInboxItem": {
         "label": "알림 보관",

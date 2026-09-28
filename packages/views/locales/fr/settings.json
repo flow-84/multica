@@ -168,6 +168,10 @@
     "sticky_comment_bar": {
       "title": "Épingler la barre de commentaire en bas"
     },
+    "auto_read_agent_answers": {
+      "title": "Lire à voix haute les nouvelles réponses des agents",
+      "hint": "Lit chaque nouveau commentaire d'agent de cet espace de travail dès son arrivée, l'un après l'autre."
+    },
     "issue_title": "Création de tâches",
     "comments_title": "Commentaires",
     "device_hint": "Enregistré sur cet appareil.",
@@ -226,6 +230,10 @@
       "findInIssue": {
         "label": "Rechercher dans la tâche",
         "description": "Rechercher dans la tâche ouverte."
+      },
+      "readLatestAnswer": {
+        "label": "Lire la dernière réponse",
+        "description": "Lit le commentaire d'agent le plus récent du ticket ouvert. Appuyez à nouveau pour arrêter."
       },
       "archiveInboxItem": {
         "label": "Archiver la notification",

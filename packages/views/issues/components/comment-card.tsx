@@ -47,6 +47,7 @@ import { useConfigStore } from "@multica/core/config";
 import { selectStandaloneAttachments } from "@multica/core/attachments/image-sequence";
 import { useCommentCollapseStore, useCommentDraftStore } from "@multica/core/issues/stores";
 import { useT } from "../../i18n";
+import { SpeakButton } from "../../speech/speak-button";
 import { CommentsFoldBar } from "./resolved-thread-bar";
 import { deriveThreadResolution } from "./thread-utils";
 import { RevisionConflictCompare } from "./revision-conflict-compare";
@@ -766,6 +767,9 @@ function CommentRow({
         )}
 
         <div data-comment-actions className="ml-auto flex shrink-0 items-center gap-0.5">
+          {entry.actor_type === "agent" && !edit.editing && (
+            <SpeakButton id={entry.id} markdown={entry.content} className={commentActionClassName} />
+          )}
           {!edit.editing && <QuickEmojiPicker
             onSelect={(emoji) => onToggleReaction(entry.id, emoji)}
             ariaLabel={t(($) => $.comment.add_reaction)}
@@ -1273,6 +1277,9 @@ function CommentCardImpl({
                   <ChevronRight aria-hidden className={cn("h-3.5 w-3.5 transition-transform motion-reduce:transition-none", open && "rotate-90")} />
                 </Button>
                 {open && !deleted && <>
+                  {entry.actor_type === "agent" && !edit.editing && (
+                    <SpeakButton id={entry.id} markdown={entry.content} className={commentActionClassName} />
+                  )}
                   {!edit.editing && <QuickEmojiPicker
                     onSelect={(emoji) => onToggleReaction(entry.id, emoji)}
                     ariaLabel={t(($) => $.comment.add_reaction)}

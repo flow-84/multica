@@ -15,5 +15,6 @@ export { DashboardLayout } from "./dashboard-layout";
 export { useDashboardGuard } from "./use-dashboard-guard";
 export { WorkspaceLoader } from "./workspace-loader";
 export { WorkspacePresencePrefetch } from "./workspace-presence-prefetch";
+export { AutoReadAgentAnswers } from "../speech/auto-read-agent-answers";
 export { GlobalShortcuts } from "./global-shortcuts";
 export { NavigationProgress } from "./navigation-progress";
