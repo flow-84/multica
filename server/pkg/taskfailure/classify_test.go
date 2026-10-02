@@ -90,6 +90,15 @@ func TestClassifyRules(t *testing.T) {
 		// agent_error.unknown (MS-121).
 		{"session limit resets", "You've hit your session limit · resets 2pm", ReasonAgentProviderCapacityOrRateLimit},
 		{"session limit curly", "You’ve hit your session limit · resets 2pm", ReasonAgentProviderCapacityOrRateLimit},
+		// Claude Code's two other real wordings for the same 5-hour window.
+		// Without rule 3b the first fell through to agent_error.unknown and the
+		// second was claimed by rule 4's "usage limit" and filed as terminal
+		// billing, so neither of them was ever retried (MS-121).
+		{"5-hour window limit", "5-hour limit reached ∙ resets 3am", ReasonAgentProviderCapacityOrRateLimit},
+		{"claude usage window with reset epoch", "Claude AI usage limit reached|1757808000", ReasonAgentProviderCapacityOrRateLimit},
+		{"generic limit naming a reset", "Request limit hit, resets at 14:00 UTC", ReasonAgentProviderCapacityOrRateLimit},
+		// A billing quota names no reset window and stays terminal.
+		{"billing quota stays quota", "402 insufficient_balance: add credits", ReasonAgentProviderQuotaLimit},
 
 		// 6. Provider 5xx / server error.
 		{"server had an error", "the server had an error processing your request", ReasonAgentProviderServerError},
