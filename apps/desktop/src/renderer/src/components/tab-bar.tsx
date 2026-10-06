@@ -220,9 +220,9 @@ function SortableTabItem({
   const speaking = useSpeechStore((s) => {
     if (!s.speaking) return false;
     const subject = parseTabSubject(tab.url);
-    if (subject.kind === "issue") {
-      return subject.id === s.speaking.issueId || subject.id === s.speaking.identifier;
-    }
+    const issueKey =
+      subject.kind === "issue" ? subject.id : subject.kind === "inbox" ? subject.selectedKey : null;
+    if (issueKey) return issueKey === s.speaking.issueId || issueKey === s.speaking.identifier;
     return subject.kind === "project" && subject.id === s.speaking.projectId;
   });
 
