@@ -1119,6 +1119,9 @@
     "auto_read_on": "새 에이전트 답변 자동 읽기",
     "auto_read_off": "새 에이전트 답변 자동 읽기 중지",
     "new_answer_on": "{{identifier}}에 새 답변.",
-    "new_answer": "새 답변."
+    "new_answer": "새 답변.",
+    "now_reading": "{{identifier}} 읽는 중",
+    "now_summarizing": "{{identifier}} 요약 중…",
+    "go_to_speaking_issue": "읽고 있는 태스크 열기"
   }
 }

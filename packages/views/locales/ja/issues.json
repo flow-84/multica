@@ -1119,6 +1119,9 @@
     "auto_read_on": "新しいエージェント回答を自動で読み上げ",
     "auto_read_off": "新しいエージェント回答の自動読み上げを停止",
     "new_answer_on": "{{identifier}} に新しい回答。",
-    "new_answer": "新しい回答。"
+    "new_answer": "新しい回答。",
+    "now_reading": "{{identifier}} を読み上げ中",
+    "now_summarizing": "{{identifier}} を要約中…",
+    "go_to_speaking_issue": "読み上げ中のタスクを開く"
   }
 }

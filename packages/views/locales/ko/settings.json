@@ -172,6 +172,10 @@
       "title": "새 에이전트 답변 소리 내어 읽기",
       "hint": "이 워크스페이스의 새 에이전트 댓글을 도착하는 순서대로 읽어 줍니다."
     },
+    "summarize_answers": {
+      "title": "짧은 요약 읽기",
+      "hint": "전체 답변 대신 완료 여부, 남은 항목, 다음 단계를 몇 문장으로 읽어 줍니다. 데스크톱 앱에서 Claude 로그인을 사용합니다."
+    },
     "issue_title": "태스크 생성",
     "comments_title": "댓글",
     "device_hint": "현재 기기에 저장됩니다.",
@@ -234,6 +238,10 @@
       "readLatestAnswer": {
         "label": "최신 답변 읽기",
         "description": "열린 이슈의 최신 에이전트 댓글을 읽습니다. 다시 누르면 멈춥니다."
+      },
+      "goToSpeakingIssue": {
+        "label": "읽고 있는 태스크 열기",
+        "description": "에이전트 답변을 읽고 있는 태스크로 이동합니다."
       },
       "archiveInboxItem": {
         "label": "알림 보관",

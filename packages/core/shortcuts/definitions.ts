@@ -13,6 +13,7 @@ export type ShortcutActionId =
   | "toggleChat"
   | "findInIssue"
   | "readLatestAnswer"
+  | "goToSpeakingIssue"
   | "archiveInboxItem"
   | "send"
   | "goBack"
@@ -100,6 +101,13 @@ export const SHORTCUT_ACTIONS: readonly ShortcutActionDefinition[] = [
     id: "readLatestAnswer",
     category: "general",
     defaultShortcut: createShortcutChord("S", { primary: true, shift: true }),
+    allowInEditable: false,
+  },
+  // O for "open": jumps to the issue whose answer is being read aloud.
+  {
+    id: "goToSpeakingIssue",
+    category: "general",
+    defaultShortcut: createShortcutChord("O", { primary: true, shift: true }),
     allowInEditable: false,
   },
   {

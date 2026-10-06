@@ -3,13 +3,12 @@
 import { useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useWorkspaceId } from "@multica/core";
-import { issueDetailOptions } from "@multica/core/issues/queries";
 import { useWSEvent } from "@multica/core/realtime";
 import { useSpeechStore } from "@multica/core/speech";
 import type { CommentCreatedPayload } from "@multica/core/types";
 import { useT } from "../i18n";
 import { enqueue } from "./speech-engine";
-import { markdownToSpeech } from "./speech-text";
+import { loadSpeechIssue } from "./speech-issue";
 
 // Module-level so a comment is spoken once per renderer even when several
 // workspace layouts (desktop tabs) mount this listener at the same time.
@@ -35,17 +34,14 @@ export function AutoReadAgentAnswers() {
         if (spokenCommentIds.has(comment.id)) return;
         spokenCommentIds.add(comment.id);
 
-        const text = markdownToSpeech(comment.content ?? "");
-        if (!text) return;
-        void qc
-          .fetchQuery({ ...issueDetailOptions(wsId, comment.issue_id), staleTime: 60_000 })
-          .then((issue) => issue?.identifier ?? null, () => null)
-          .then((identifier) => {
-            const prefix = identifier
-              ? t(($) => $.speech.new_answer_on, { identifier })
-              : t(($) => $.speech.new_answer);
-            enqueue(comment.id, `${prefix} ${text}`);
-          });
+        const markdown = comment.content ?? "";
+        if (!markdown.trim()) return;
+        void loadSpeechIssue(qc, wsId, comment.issue_id).then((issue) => {
+          const prefix = issue
+            ? t(($) => $.speech.new_answer_on, { identifier: issue.identifier })
+            : t(($) => $.speech.new_answer);
+          enqueue({ commentId: comment.id, markdown, issue, prefix });
+        });
       },
       [qc, wsId, t],
     ),

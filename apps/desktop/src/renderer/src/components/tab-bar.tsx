@@ -37,7 +37,9 @@ import { useScrollFade } from "@multica/ui/hooks/use-scroll-fade";
 import { SIDEBAR_WRAPPER_FILL_CLASS } from "@multica/ui/components/ui/sidebar";
 import { cn } from "@multica/ui/lib/utils";
 import { useTabStore, useActiveGroup, type Tab } from "@/stores/tab-store";
-import { paths } from "@multica/core/paths";
+import { parseTabSubject, paths } from "@multica/core/paths";
+import { useSpeechStore } from "@multica/core/speech";
+import { SPEAKING_HIGHLIGHT } from "@multica/views/speech";
 import {
   useTabPresentation,
   ResourceLeadingVisual,
@@ -215,6 +217,14 @@ function SortableTabItem({
   // updated as the cache updates. `tab.title` is only a persisted first-frame
   // fallback. See @multica/views useTabPresentation.
   const { visual, title } = useTabPresentation(tab.url, tab.title);
+  const speaking = useSpeechStore((s) => {
+    if (!s.speaking) return false;
+    const subject = parseTabSubject(tab.url);
+    if (subject.kind === "issue") {
+      return subject.id === s.speaking.issueId || subject.id === s.speaking.identifier;
+    }
+    return subject.kind === "project" && subject.id === s.speaking.projectId;
+  });
 
   // Persist the active tab's resolved title so it survives as the next
   // session's first-frame fallback. The tab strip itself always renders the
@@ -312,6 +322,7 @@ function SortableTabItem({
         isActive
           ? "font-medium text-foreground"
           : "text-muted-foreground hover:text-sidebar-accent-foreground",
+        speaking && SPEAKING_HIGHLIGHT,
         isDragging && "opacity-60",
       )}
     >

@@ -88,6 +88,8 @@ import {
 } from "@multica/core/shortcuts";
 import { ShortcutKeycaps } from "../common/shortcut-keycaps";
 import { useAppForeground } from "../common/use-app-foreground";
+import { useSpeechStore } from "@multica/core/speech";
+import { NowSpeaking, SPEAKING_HIGHLIGHT } from "../speech/now-speaking";
 
 // Top-level nav items stay active when the user is on a child route
 // (e.g. "Projects" stays lit on /:slug/projects/:id). Pinned items keep
@@ -192,6 +194,7 @@ function SortablePinItem({
   iconNode,
   onNavigate,
   isActiveOverride,
+  speaking = false,
 }: {
   pin: PinnedItem;
   href: string;
@@ -203,6 +206,8 @@ function SortablePinItem({
   onNavigate?: () => void;
   /** Overrides the plain path comparison (view pins carry extra state). */
   isActiveOverride?: boolean;
+  /** The pinned issue, or an issue in the pinned project, is being read aloud. */
+  speaking?: boolean;
 }) {
   const { t } = useT("layout");
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: pin.id });
@@ -237,6 +242,7 @@ function SortablePinItem({
         }}
         className={cn(
           "text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground",
+          speaking && SPEAKING_HIGHLIGHT,
           isDragging && "pointer-events-none",
         )}
       >
@@ -291,6 +297,12 @@ function PinRow({
   wsId: string;
 }) {
   const isIssue = pin.item_type === "issue";
+  const speaking = useSpeechStore(
+    (s) =>
+      !!s.speaking &&
+      ((isIssue && s.speaking.issueId === pin.item_id) ||
+        (pin.item_type === "project" && s.speaking.projectId === pin.item_id)),
+  );
   const statusCatalog = useIssueStatuses(wsId);
   const isView = pin.item_type === "view";
   const p = useWorkspacePaths();
@@ -347,6 +359,7 @@ function PinRow({
     });
     return (
       <SortablePinItem
+        speaking={speaking}
         pin={pin}
         // ?view= keeps a web reload on the view for the surfaces that mount
         // the URL-sync hook (/issues, /my-issues). Project pages don't sync
@@ -384,6 +397,7 @@ function PinRow({
     );
     return (
       <SortablePinItem
+        speaking={speaking}
         pin={pin}
         href={href}
         pathname={pathname}
@@ -400,6 +414,7 @@ function PinRow({
   const iconNode = <ProjectIcon project={project} size="sm" />;
   return (
     <SortablePinItem
+      speaking={speaking}
       pin={pin}
       href={href}
       pathname={pathname}
@@ -745,6 +760,7 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
             </SidebarMenuItem>
           </SidebarMenu>
           <SidebarMenu>
+            <NowSpeaking />
             {searchSlot && (
               <SidebarMenuItem>
                 {searchSlot}

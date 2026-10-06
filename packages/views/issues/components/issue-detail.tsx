@@ -2957,7 +2957,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                 <TooltipContent side="bottom">{t(($) => $.detail.archive_tooltip)}</TooltipContent>
               </Tooltip>
             )}
-            <IssueReadAloudControls timeline={timeline} />
+            <IssueReadAloudControls issue={issue} timeline={timeline} />
             <Tooltip>
               <TooltipTrigger
                 render={

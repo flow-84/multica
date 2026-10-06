@@ -46,6 +46,7 @@ if (nativeSpeech) {
   setSpeechBackend({
     speak: (text) => nativeSpeech.speak(text),
     stop: () => void nativeSpeech.stop(),
+    summarize: (input) => nativeSpeech.summarize(input),
   });
 }
 

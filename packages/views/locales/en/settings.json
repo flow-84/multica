@@ -172,6 +172,10 @@
       "title": "Read new agent answers aloud",
       "hint": "Speaks every new agent comment in this workspace as it arrives, one after another."
     },
+    "summarize_answers": {
+      "title": "Read a short summary",
+      "hint": "Reads a few sentences on whether the work is done, what is open, and the next step, instead of the full answer. Uses your Claude login in the desktop app."
+    },
     "issue_title": "Issue creation",
     "comments_title": "Comments",
     "device_hint": "Saved on this device.",
@@ -234,6 +238,10 @@
       "readLatestAnswer": {
         "label": "Read latest answer aloud",
         "description": "Reads the newest agent comment of the open issue. Press again to stop."
+      },
+      "goToSpeakingIssue": {
+        "label": "Open issue being read aloud",
+        "description": "Jumps to the issue whose agent answer is being read aloud."
       },
       "archiveInboxItem": {
         "label": "Archive notification",

@@ -768,7 +768,7 @@ function CommentRow({
 
         <div data-comment-actions className="ml-auto flex shrink-0 items-center gap-0.5">
           {entry.actor_type === "agent" && !edit.editing && (
-            <SpeakButton id={entry.id} markdown={entry.content} className={commentActionClassName} />
+            <SpeakButton id={entry.id} issueId={issueId} markdown={entry.content} className={commentActionClassName} />
           )}
           {!edit.editing && <QuickEmojiPicker
             onSelect={(emoji) => onToggleReaction(entry.id, emoji)}
@@ -1278,7 +1278,7 @@ function CommentCardImpl({
                 </Button>
                 {open && !deleted && <>
                   {entry.actor_type === "agent" && !edit.editing && (
-                    <SpeakButton id={entry.id} markdown={entry.content} className={commentActionClassName} />
+                    <SpeakButton id={entry.id} issueId={issueId} markdown={entry.content} className={commentActionClassName} />
                   )}
                   {!edit.editing && <QuickEmojiPicker
                     onSelect={(emoji) => onToggleReaction(entry.id, emoji)}

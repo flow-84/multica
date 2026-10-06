@@ -51,6 +51,13 @@ interface DesktopAPI {
   speech?: {
     speak: (text: string) => Promise<void>;
     stop: () => Promise<void>;
+    summarize: (input: {
+      identifier: string;
+      title: string;
+      status: string;
+      text: string;
+      locale: string;
+    }) => Promise<string | null>;
   };
   /** Download a file by URL through Electron's native download system.
    *  Shows a native save dialog. On non-desktop platforms this is undefined. */

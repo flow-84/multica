@@ -1,5 +1,7 @@
 "use client";
 
+import { useIsSpeakingIssue } from "@multica/core/speech";
+import { SPEAKING_HIGHLIGHT } from "../../speech/now-speaking";
 import { memo, type Ref } from "react";
 import { useSortable, defaultAnimateLayoutChanges } from "@dnd-kit/sortable";
 import type { AnimateLayoutChanges } from "@dnd-kit/sortable";
@@ -59,6 +61,7 @@ function ListRowContent({
   const locale = useLocale();
   const selection = useIssueSurfaceSelection();
   const selected = selection.selectedIds.has(issue.id);
+  const speaking = useIsSpeakingIssue(issue.id);
   const toggle = selection.toggle;
   const p = useWorkspacePaths();
   const storeProperties = useViewStore((s) => s.cardProperties);
@@ -88,7 +91,7 @@ function ListRowContent({
           selected
             ? "bg-surface-selected hover:not-data-[popup-open]:bg-surface-selected data-[popup-open]:bg-surface-selected"
             : "hover:not-data-[popup-open]:bg-surface-hover data-[popup-open]:bg-surface-hover"
-        } ${isDragging ? "opacity-30" : ""}`}
+        } ${speaking ? SPEAKING_HIGHLIGHT : ""} ${isDragging ? "opacity-30" : ""}`}
       >
         <div
           className="relative flex shrink-0 items-center justify-center w-4 h-4"

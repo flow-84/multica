@@ -172,6 +172,10 @@
       "title": "Lire à voix haute les nouvelles réponses des agents",
       "hint": "Lit chaque nouveau commentaire d'agent de cet espace de travail dès son arrivée, l'un après l'autre."
     },
+    "summarize_answers": {
+      "title": "Lire un court résumé",
+      "hint": "Lit quelques phrases sur l'état du travail, les points ouverts et la prochaine étape au lieu de la réponse complète. Utilise votre connexion Claude dans l'application de bureau."
+    },
     "issue_title": "Création de tâches",
     "comments_title": "Commentaires",
     "device_hint": "Enregistré sur cet appareil.",
@@ -234,6 +238,10 @@
       "readLatestAnswer": {
         "label": "Lire la dernière réponse",
         "description": "Lit le commentaire d'agent le plus récent du ticket ouvert. Appuyez à nouveau pour arrêter."
+      },
+      "goToSpeakingIssue": {
+        "label": "Ouvrir la tâche lue à voix haute",
+        "description": "Accède à la tâche dont la réponse d'agent est en cours de lecture."
       },
       "archiveInboxItem": {
         "label": "Archiver la notification",

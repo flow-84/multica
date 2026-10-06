@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo } from "react";
 import { AudioLines } from "lucide-react";
-import type { TimelineEntry } from "@multica/core/types";
+import type { Issue, TimelineEntry } from "@multica/core/types";
 import { isDeletedComment } from "@multica/core/issues/comment-deletion";
 import {
   getShortcut,
@@ -17,7 +17,6 @@ import { cn } from "@multica/ui/lib/utils";
 import { useT } from "../i18n";
 import { SpeakButton } from "./speak-button";
 import { isSpeechSupported, speak, stopSpeaking } from "./speech-engine";
-import { markdownToSpeech } from "./speech-text";
 
 /** Newest non-deleted agent comment in the timeline, or null. */
 export function latestAgentAnswer(timeline: readonly TimelineEntry[]): TimelineEntry | null {
@@ -34,7 +33,13 @@ export function latestAgentAnswer(timeline: readonly TimelineEntry[]): TimelineE
  * Issue header controls: read the latest agent answer aloud (also bound to
  * the `readLatestAnswer` shortcut) and toggle auto-reading of new answers.
  */
-export function IssueReadAloudControls({ timeline }: { timeline: readonly TimelineEntry[] }) {
+export function IssueReadAloudControls({
+  issue,
+  timeline,
+}: {
+  issue: Issue;
+  timeline: readonly TimelineEntry[];
+}) {
   const { t } = useT("issues");
   const latest = useMemo(() => latestAgentAnswer(timeline), [timeline]);
   const autoRead = useSpeechStore((s) => s.autoRead);
@@ -49,12 +54,12 @@ export function IssueReadAloudControls({ timeline }: { timeline: readonly Timeli
       if (!shortcutMatchesEvent(getShortcut("readLatestAnswer"), e)) return;
       if (isEditableShortcutTarget(e.target)) return;
       e.preventDefault();
-      if (useSpeechStore.getState().speakingId === id) stopSpeaking();
-      else speak(id, markdownToSpeech(content));
+      if (useSpeechStore.getState().speaking?.commentId === id) stopSpeaking();
+      else speak({ commentId: id, markdown: content, issue });
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [latest, overrides]);
+  }, [latest, issue, overrides]);
 
   if (!isSpeechSupported()) return null;
 
@@ -64,6 +69,7 @@ export function IssueReadAloudControls({ timeline }: { timeline: readonly Timeli
       {latest && (
         <SpeakButton
           id={latest.id}
+          issueId={issue.id}
           markdown={latest.content}
           className="text-muted-foreground"
           label={t(($) => $.speech.read_latest_answer)}

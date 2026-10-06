@@ -20,6 +20,7 @@ import { useLocaleAdapter } from "@multica/core/i18n/react";
 import { useAuthStore } from "@multica/core/auth";
 import { useCommentComposerStore } from "@multica/core/issues/stores";
 import { useSpeechStore } from "@multica/core/speech";
+import { canSummarize } from "../../speech/speech-engine";
 import { api } from "@multica/core/api";
 import { browserTimezone, timezoneOptions } from "../../common/timezone-select";
 import {
@@ -243,6 +244,7 @@ function GeneralPreferences() {
         <SettingsCard>
           <StickyCommentBarRow />
           <AutoReadAgentAnswersRow />
+          {canSummarize() && <SummarizeAnswersRow />}
         </SettingsCard>
       </SettingsSection>
     </>
@@ -385,6 +387,25 @@ function AutoReadAgentAnswersRow() {
         checked={autoRead}
         onCheckedChange={() => toggleAutoRead()}
         aria-label={t(($) => $.preferences.auto_read_agent_answers.title)}
+      />
+    </SettingsRow>
+  );
+}
+
+function SummarizeAnswersRow() {
+  const { t } = useT("settings");
+  const summarize = useSpeechStore((s) => s.summarize);
+  const toggleSummarize = useSpeechStore((s) => s.toggleSummarize);
+
+  return (
+    <SettingsRow
+      label={t(($) => $.preferences.summarize_answers.title)}
+      description={t(($) => $.preferences.summarize_answers.hint)}
+    >
+      <Switch
+        checked={summarize}
+        onCheckedChange={() => toggleSummarize()}
+        aria-label={t(($) => $.preferences.summarize_answers.title)}
       />
     </SettingsRow>
   );

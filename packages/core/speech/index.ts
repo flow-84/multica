@@ -1,1 +1,1 @@
-export { useSpeechStore } from "./store";
+export { useSpeechStore, useIsSpeakingIssue, type SpeakingItem } from "./store";

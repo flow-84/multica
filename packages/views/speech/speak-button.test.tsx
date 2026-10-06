@@ -1,10 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, screen } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { TimelineEntry } from "@multica/core/types";
 import { useSpeechStore } from "@multica/core/speech";
 import { renderWithI18n } from "../test/i18n";
 import { SpeakButton } from "./speak-button";
 import { latestAgentAnswer } from "./issue-read-aloud-controls";
+
+vi.mock("./speech-issue", () => ({ loadSpeechIssue: async () => null }));
 
 class FakeUtterance {
   lang = "";
@@ -25,7 +28,7 @@ beforeEach(() => {
   spoken.length = 0;
   vi.stubGlobal("SpeechSynthesisUtterance", FakeUtterance);
   Object.defineProperty(window, "speechSynthesis", { value: synth, configurable: true });
-  useSpeechStore.setState({ speakingId: null });
+  useSpeechStore.setState({ speaking: null });
 });
 
 afterEach(() => {
@@ -35,15 +38,19 @@ afterEach(() => {
 });
 
 describe("SpeakButton", () => {
-  it("speaks the plain text of the answer and stops on a second press", () => {
-    renderWithI18n(<SpeakButton id="c1" markdown={"**Fertig** und [live](https://x.y)"} />);
+  it("speaks the plain text of the answer and stops on a second press", async () => {
+    renderWithI18n(
+      <QueryClientProvider client={new QueryClient()}>
+        <SpeakButton id="c1" issueId="i1" markdown={"**Fertig** und [live](https://x.y)"} />
+      </QueryClientProvider>,
+    );
     fireEvent.click(screen.getByRole("button", { name: "Read aloud" }));
-    expect(spoken.map((u) => u.text)).toEqual(["Fertig und live."]);
-    expect(useSpeechStore.getState().speakingId).toBe("c1");
+    await waitFor(() => expect(spoken.map((u) => u.text)).toEqual(["Fertig und live."]));
+    expect(useSpeechStore.getState().speaking?.commentId).toBe("c1");
 
     fireEvent.click(screen.getByRole("button", { name: "Stop reading" }));
     expect(synth.cancel).toHaveBeenCalled();
-    expect(useSpeechStore.getState().speakingId).toBeNull();
+    expect(useSpeechStore.getState().speaking).toBeNull();
   });
 });
 

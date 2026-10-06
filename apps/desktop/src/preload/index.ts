@@ -156,6 +156,13 @@ const desktopAPI = {
       ? {
           speak: (text: string): Promise<void> => ipcRenderer.invoke("speech:speak", text),
           stop: (): Promise<void> => ipcRenderer.invoke("speech:stop"),
+          summarize: (input: {
+            identifier: string;
+            title: string;
+            status: string;
+            text: string;
+            locale: string;
+          }): Promise<string | null> => ipcRenderer.invoke("speech:summarize", input),
         }
       : undefined,
   /** Download a file by URL through Electron's native download system.

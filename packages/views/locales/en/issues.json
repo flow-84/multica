@@ -1151,6 +1151,9 @@
     "auto_read_on": "Auto-read new agent answers",
     "auto_read_off": "Stop auto-reading new agent answers",
     "new_answer_on": "New answer on {{identifier}}.",
-    "new_answer": "New answer."
+    "new_answer": "New answer.",
+    "now_reading": "Reading {{identifier}}",
+    "now_summarizing": "Summarizing {{identifier}}…",
+    "go_to_speaking_issue": "Open the issue being read aloud"
   }
 }

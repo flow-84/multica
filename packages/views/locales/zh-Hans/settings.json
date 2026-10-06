@@ -172,6 +172,10 @@
       "title": "朗读新的智能体回复",
       "hint": "工作区中每条新的智能体评论到达时依次朗读。"
     },
+    "summarize_answers": {
+      "title": "朗读简短摘要",
+      "hint": "用几句话朗读是否完成、待处理事项和下一步，而不是完整回复。在桌面应用中使用你的 Claude 登录。"
+    },
     "issue_title": "任务创建",
     "comments_title": "评论",
     "device_hint": "保存在当前设备上。",
@@ -234,6 +238,10 @@
       "readLatestAnswer": {
         "label": "朗读最新回复",
         "description": "朗读当前打开事项中最新的智能体评论。再次按下即停止。"
+      },
+      "goToSpeakingIssue": {
+        "label": "打开正在朗读的任务",
+        "description": "跳转到正在朗读智能体回复的任务。"
       },
       "archiveInboxItem": {
         "label": "归档通知",
