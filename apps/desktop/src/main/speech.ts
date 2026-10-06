@@ -22,7 +22,7 @@ const CLAUDE_CANDIDATES = [
   join(homedir(), ".local", "bin", "claude"),
   join(homedir(), ".claude", "local", "claude"),
 ];
-const SUMMARY_TIMEOUT_MS = 30_000;
+const SUMMARY_TIMEOUT_MS = 45_000;
 const MAX_INPUT_CHARS = 12_000;
 
 const SUMMARY_SYSTEM_PROMPT = [
@@ -47,6 +47,14 @@ function isSummaryInput(v: unknown): v is SummaryInput {
   if (!v || typeof v !== "object") return false;
   const o = v as Record<string, unknown>;
   return ["identifier", "title", "status", "text", "locale"].every((k) => typeof o[k] === "string");
+}
+
+// An app launched from inside a Claude Code session inherits its session
+// variables, which make the CLI attach to that session and stall.
+function cliEnv(): NodeJS.ProcessEnv {
+  return Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => !key.startsWith("CLAUDE")),
+  );
 }
 
 /** Short spoken summary from the Claude CLI on the user's own login, or null. */
@@ -76,7 +84,7 @@ function summarize(input: SummaryInput): Promise<string | null> {
         "--system-prompt", SUMMARY_SYSTEM_PROMPT,
         "--output-format", "text",
       ],
-      { cwd: tmpdir(), stdio: ["pipe", "pipe", "ignore"] },
+      { cwd: tmpdir(), env: cliEnv(), stdio: ["pipe", "pipe", "ignore"] },
     );
     let out = "";
     const timer = setTimeout(() => child.kill(), SUMMARY_TIMEOUT_MS);
