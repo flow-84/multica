@@ -23,7 +23,10 @@ export interface SpeechBackend {
   summarize?: (input: SummaryInput) => Promise<string | null>;
 }
 
-export type SpeechIssue = Pick<Issue, "id" | "identifier" | "title" | "status" | "project_id">;
+export type SpeechIssue = Pick<
+  Issue,
+  "id" | "identifier" | "title" | "status" | "status_category" | "project_id"
+>;
 
 /** One agent answer to read aloud. */
 export interface SpeechRequest {

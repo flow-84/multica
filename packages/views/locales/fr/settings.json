@@ -169,8 +169,8 @@
       "title": "Épingler la barre de commentaire en bas"
     },
     "auto_read_agent_answers": {
-      "title": "Lire à voix haute les nouvelles réponses des agents",
-      "hint": "Lit chaque nouveau commentaire d'agent de cet espace de travail dès son arrivée, l'un après l'autre."
+      "title": "Lire les réponses des agents quand le travail s'arrête",
+      "hint": "Lit une réponse d'agent quand le ticket est terminé ou bloqué, que l'exécution échoue ou que personne ne prend le relais, ou qu'elle vous mentionne. Les passages de relais à d'autres agents restent silencieux."
     },
     "summarize_answers": {
       "title": "Lire un court résumé",

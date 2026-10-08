@@ -169,8 +169,8 @@
       "title": "Pin comment bar to bottom"
     },
     "auto_read_agent_answers": {
-      "title": "Read new agent answers aloud",
-      "hint": "Speaks every new agent comment in this workspace as it arrives, one after another."
+      "title": "Read agent answers aloud when work stops",
+      "hint": "Speaks an agent answer when the issue is done or blocked, the run fails or nobody picks it up, or it mentions you. Handoffs to other agents stay silent."
     },
     "summarize_answers": {
       "title": "Read a short summary",
