@@ -2,12 +2,14 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -876,5 +878,113 @@ func TestHandleTask_KeepsEnvRootActiveAcrossCompletion(t *testing.T) {
 	// returned, otherwise we'd be leaking active marks across tasks.
 	if d.isActiveEnvRoot(expectedEnvRoot) {
 		t.Fatal("env root remained active after handleTask returned — outer guard's deferred unmark did not fire")
+	}
+}
+
+// A worktree task waits for any in_place task on the same directory before it
+// snapshots the tree, and that holder can run for an hour. The wait must not
+// count against the prepare deadline: before the fix every worktree task
+// queued behind a long in_place run failed with "task preparation timed out
+// after 5m0s", and each server-side retry queued behind the same holder and
+// failed again (MS-1941).
+func TestRunTask_WorktreeSnapshotWaitDoesNotSpendPrepareBudget(t *testing.T) {
+	t.Parallel()
+
+	const (
+		daemonID     = "d-snapshot-wait"
+		budget       = 2 * time.Second
+		leaseRefresh = 10 * time.Millisecond
+	)
+
+	repo := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main"},
+		{"-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	raw, err := json.Marshal(localDirectoryRef{
+		LocalPath:     repo,
+		DaemonID:      daemonID,
+		ExecutionMode: localDirectoryModeWorktree,
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	resources := []ProjectResourceData{
+		{ID: "r1", ResourceType: localDirectoryResourceType, ResourceRef: raw},
+	}
+	assignment, err := localDirectoryAssignmentForTask(Task{ProjectResources: resources}, daemonID)
+	if err != nil || !assignment.UsesWorktree() {
+		t.Fatalf("assignment = %+v, %v; want worktree mode", assignment, err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	var leaseCalls, startCalls atomic.Int64
+	client := NewClient(srv.URL)
+	client.client.Transport = &prepareRequestCountingTransport{
+		base:   client.client.Transport,
+		leases: &leaseCalls,
+		starts: &startCalls,
+	}
+
+	fakeBin := filepath.Join(t.TempDir(), "claude")
+	writeTestExecutable(t, fakeBin, []byte("#!/bin/sh\nexit 0\n"))
+	d := &Daemon{
+		client:              client,
+		logger:              slog.New(slog.NewTextHandler(io.Discard, nil)),
+		workspaces:          make(map[string]*workspaceState),
+		runtimeIndex:        map[string]Runtime{"rt-1": {ID: "rt-1", Provider: "claude"}},
+		activeEnvRoots:      make(map[string]int),
+		localPathLocks:      NewLocalPathLocker(),
+		taskPrepareTimeout:  budget,
+		prepareLeaseRefresh: leaseRefresh,
+		cfg: Config{
+			DaemonID:       daemonID,
+			WorkspacesRoot: t.TempDir(),
+			Agents: map[string]AgentEntry{
+				"claude": {Path: fakeBin},
+			},
+		},
+	}
+
+	// An in_place task on the same directory holds the path mutex for three
+	// prepare budgets.
+	release, err := d.localPathLocks.Acquire(context.Background(), assignment.RealPath, "in-place-holder", nil)
+	if err != nil {
+		t.Fatalf("hold path mutex: %v", err)
+	}
+	time.AfterFunc(3*budget, release)
+
+	task := Task{
+		ID:                  "task-snapshot-wait",
+		StartClaimSupported: true,
+		DispatchedAt:        "2026-10-08T14:24:38.123456Z",
+		WorkspaceID:         "ws-snapshot-wait",
+		RuntimeID:           "rt-1",
+		IssueID:             "issue-snapshot-wait",
+		IssueIdentifier:     "MS-1941",
+		AgentID:             "agent-snapshot-wait",
+		Agent:               &AgentData{ID: "agent-snapshot-wait", Name: "test-agent"},
+		ProjectResources:    resources,
+	}
+	taskLog := slog.New(slog.NewTextHandler(io.Discard, nil))
+	_, err = d.runTask(context.Background(), task, "claude", 0, taskLog)
+	if errors.Is(err, errTaskPrepareTimeout) {
+		t.Fatalf("runTask error = %v: waiting for the in_place holder spent the prepare budget", err)
+	}
+	if startCalls.Load() == 0 {
+		t.Fatalf("runTask never reached /start (err = %v)", err)
+	}
+	if leaseCalls.Load() == 0 {
+		t.Fatal("prepare lease was not extended while the snapshot waited for the holder")
 	}
 }

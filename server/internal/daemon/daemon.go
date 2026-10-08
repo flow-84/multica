@@ -7673,7 +7673,15 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	}
 
 	prepareTimeout := d.effectiveTaskPrepareTimeout()
-	prepareCtx, cancelPrepare := context.WithTimeoutCause(ctx, prepareTimeout, errTaskPrepareTimeout)
+	// A timer rather than a context deadline, so the worktree snapshot can
+	// pause it while it queues behind an in_place holder (see below).
+	prepareCtx, cancelPrepareCause := context.WithCancelCause(ctx)
+	prepareDeadline := time.Now().Add(prepareTimeout)
+	prepareTimer := time.AfterFunc(prepareTimeout, func() { cancelPrepareCause(errTaskPrepareTimeout) })
+	cancelPrepare := func() {
+		prepareTimer.Stop()
+		cancelPrepareCause(context.Canceled)
+	}
 	prepareComplete := false
 	defer func() {
 		cancelPrepare()
@@ -8173,6 +8181,15 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			// launch. The prepare-lease extender is already running for this
 			// whole phase, so only status, accounting, and cancellation are
 			// mirrored here.
+			//
+			// The wait itself does not spend the prepare budget: the deadline
+			// bounds the daemon's own startup work, not how long another task
+			// keeps the directory, and the lease keeps the task alive on the
+			// server meanwhile. Spending it here failed every worktree task
+			// queued behind an in_place run longer than the budget, and each
+			// retry queued behind the same holder (MS-1941).
+			var prepareRemaining time.Duration
+			preparePaused := false
 			waitCtx, waitCancel := context.WithCancel(prepareCtx)
 			defer waitCancel()
 			pollInterval := d.cancelPollInterval
@@ -8185,6 +8202,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			release, lockErr := d.localPathLocks.Acquire(waitCtx, localAssignment.RealPath, task.ID, func(holder string) {
 				d.resourceWaitTasks.Add(1)
 				waitCounted = true
+				if prepareTimer.Stop() {
+					preparePaused = true
+					prepareRemaining = time.Until(prepareDeadline)
+				}
 				reason := fmt.Sprintf("local_directory %s", localAssignment.AbsPath)
 				if holder != "" {
 					reason = fmt.Sprintf("%s (held by task %s)", reason, shortID(holder))
@@ -8207,6 +8228,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			})
 			if waitCounted {
 				d.resourceWaitTasks.Add(-1)
+			}
+			if preparePaused {
+				prepareTimer.Reset(max(prepareRemaining, 0))
 			}
 			if lockErr != nil {
 				return TaskResult{}, fmt.Errorf("local_directory worktree: wait for a consistent snapshot of %s: %w",
