@@ -19,6 +19,17 @@ import (
 // sandbox strips all MULTICA_* env vars before invoking `multica`.
 const TaskContextMarkerRelPath = ".multica/daemon_task_context.json"
 
+// ProjectResourcesRelPath is the workdir-relative path of the project context
+// sidecar written by writeProjectResources. The CLI reads it to scope project
+// aware commands, so both sides share this constant.
+const ProjectResourcesRelPath = ".multica/project/resources.json"
+
+// ProjectResourcesManagedBy is the discriminator written into
+// ProjectResourcesRelPath. The CLI requires it before letting the file scope a
+// command, so a stray or hand-written resources.json in some ancestor
+// directory cannot silently narrow every query.
+const ProjectResourcesManagedBy = "multica-daemon-project"
+
 // TaskContextMarkerManagedBy is the marker discriminator the CLI checks before
 // treating TaskContextMarkerRelPath as daemon-owned.
 const TaskContextMarkerManagedBy = "multica-daemon-task"
@@ -238,6 +249,7 @@ func writeTaskContextMarker(workDir string, ctx TaskContextForEnv, manifest *sid
 // directory. Schema is intentionally a thin pass-through of the API response
 // so consumers (skills, future tooling) don't need a separate parser.
 type projectResourceFile struct {
+	ManagedBy          string                  `json:"managed_by"`
 	ProjectID          string                  `json:"project_id,omitempty"`
 	ProjectTitle       string                  `json:"project_title,omitempty"`
 	ProjectDescription string                  `json:"project_description,omitempty"`
@@ -277,7 +289,8 @@ func writeProjectResources(workDir string, ctx TaskContextForEnv, manifest *side
 	if ctx.ProjectID == "" && len(ctx.ProjectResources) == 0 {
 		return nil
 	}
-	dir := filepath.Join(workDir, ".multica", "project")
+	path := filepath.Join(workDir, filepath.FromSlash(ProjectResourcesRelPath))
+	dir := filepath.Dir(path)
 	if err := recordMkdirAll(dir, 0o755, manifest); err != nil {
 		return err
 	}
@@ -286,6 +299,7 @@ func writeProjectResources(workDir string, ctx TaskContextForEnv, manifest *side
 		resources = []ProjectResourceForEnv{}
 	}
 	payload := projectResourceFile{
+		ManagedBy:          ProjectResourcesManagedBy,
 		ProjectID:          ctx.ProjectID,
 		ProjectTitle:       ctx.ProjectTitle,
 		ProjectDescription: ctx.ProjectDescription,
@@ -295,7 +309,7 @@ func writeProjectResources(workDir string, ctx TaskContextForEnv, manifest *side
 	if err != nil {
 		return err
 	}
-	if err := recordWriteFile(filepath.Join(dir, "resources.json"), data, 0o644, manifest); err != nil {
+	if err := recordWriteFile(path, data, 0o644, manifest); err != nil {
 		// .multica/project/resources.json is Multica-owned and a
 		// pre-existing path is almost certainly user content the
 		// manifest must not destroy. The runtime brief already lists
