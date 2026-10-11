@@ -207,6 +207,8 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		invalidEventCount := 0
 		assistantEventCount := 0
 		toolUseCount := 0
+		toolResultCount := 0
+		cancelledToolResultCount := 0
 		unreadableAssistantCount := 0
 		controlErrors := make(chan error, 1)
 		var controlWrites sync.WaitGroup
@@ -271,12 +273,27 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 				if b.handleUser(msg, msgCh) {
 					sawAsyncLaunch = true
 				}
+				if msg.ParentToolUseID == "" {
+					results, cancelled := countClaudeCancelledToolResults(msg.Message)
+					toolResultCount += results
+					cancelledToolResultCount += cancelled
+				}
 			case "system":
 				if msg.SessionID != "" {
 					sessionID = msg.SessionID
 				}
 				trySend(msgCh, Message{Type: MessageStatus, Status: "running", SessionID: sessionID})
 			case "result":
+				if msg.Origin != nil && msg.Origin.Kind == claudeResultOriginTaskNotification {
+					// Closing stdin here would end the SDK input before the
+					// prompt turn runs; Claude then cancels every tool call of
+					// that turn because its hook callbacks can no longer be
+					// answered (MS-2094).
+					if msg.SessionID != "" {
+						sessionID = msg.SessionID
+					}
+					continue
+				}
 				sawResult = true
 				finalResultText = msg.ResultText
 				resultIsError = msg.IsError
@@ -392,6 +409,17 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			},
 			completionGuardError,
 		)
+		// Every tool call cancelled means the run did nothing, whatever its
+		// final text says. Report it as failed and retire the session: its
+		// transcript now ends in repeated "STOP and wait for the user"
+		// results, which a resumed run would take as standing instructions.
+		retireSession := false
+		if finalStatus == "completed" && toolResultCount > 0 && cancelledToolResultCount == toolResultCount {
+			finalStatus = "failed"
+			finalOutput = ""
+			finalError = fmt.Sprintf("claude cancelled all %d tool calls of this run (%q); nothing was executed, so the session is retired and the next run starts fresh", toolResultCount, claudeToolCancelledText)
+			retireSession = true
+		}
 
 		// cmd.Wait() has returned — os/exec's stderr copy goroutine has
 		// observed every byte claude wrote to stderr before exiting, so
@@ -448,6 +476,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			SessionID:      reportedSessionID,
 			Usage:          usage,
 			ResumeRejected: resumeRejected,
+			RetireSession:  retireSession,
 		}
 	}()
 
@@ -654,6 +683,10 @@ type claudeSDKMessage struct {
 	// result fields
 	ResultText string `json:"result,omitempty"`
 	IsError    bool   `json:"is_error,omitempty"`
+	// Origin is set on the result of a turn Claude Code started on its own
+	// rather than in answer to a stdin user message — see
+	// claudeResultOriginTaskNotification.
+	Origin *claudeResultOrigin `json:"origin,omitempty"`
 	// TerminalReason is Claude Code's structured statement of why the turn
 	// ended. Read separately from IsError because the CLI computes the two
 	// independently — see claudeTerminalReasonFailure.
@@ -670,6 +703,64 @@ type claudeSDKMessage struct {
 	RequestID string          `json:"request_id,omitempty"`
 	Request   json.RawMessage `json:"request,omitempty"`
 	Response  json.RawMessage `json:"response,omitempty"`
+}
+
+type claudeResultOrigin struct {
+	Kind string `json:"kind"`
+}
+
+// claudeResultOriginTaskNotification marks the result of a turn Claude Code
+// runs to deliver a background-task notification. On --resume it does this
+// before reading the prompt whenever the previous process left background
+// tasks (Bash run_in_background, Monitor) unfinished: the orphan notice gets
+// its own turn and its own result event. That result is not the answer to
+// our prompt, so it must not end the stdin stream (MS-2094).
+const claudeResultOriginTaskNotification = "task-notification"
+
+// claudeToolCancelledText is the tool_result Claude Code writes when a tool
+// call is cancelled because the turn's abort signal is already set. In a
+// Multica run nobody can press Escape, so a run where every tool result
+// carries it did no work: the observed cause is an SDK hook callback that
+// can no longer be answered because stdin was closed (MS-2094).
+const claudeToolCancelledText = "The user doesn't want to take this action right now."
+
+// countClaudeCancelledToolResults returns how many tool_result blocks the
+// user message carries and how many of them are Claude's cancel notice.
+func countClaudeCancelledToolResults(raw json.RawMessage) (results, cancelled int) {
+	var content claudeMessageContent
+	if err := json.Unmarshal(raw, &content); err != nil {
+		return 0, 0
+	}
+	for _, block := range content.Content {
+		if block.Type != "tool_result" {
+			continue
+		}
+		results++
+		if strings.HasPrefix(strings.TrimSpace(claudeToolResultText(block.Content)), claudeToolCancelledText) {
+			cancelled++
+		}
+	}
+	return results, cancelled
+}
+
+// claudeToolResultText flattens tool_result content, which is either a JSON
+// string or an array of content blocks.
+func claudeToolResultText(raw json.RawMessage) string {
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		return text
+	}
+	var blocks []claudeContentBlock
+	if json.Unmarshal(raw, &blocks) != nil {
+		return ""
+	}
+	var parts []string
+	for _, block := range blocks {
+		if block.Type == "text" {
+			parts = append(parts, block.Text)
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 type claudeLogEntry struct {
