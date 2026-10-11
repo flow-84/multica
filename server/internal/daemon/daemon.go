@@ -8865,6 +8865,16 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		// than being relabeled resumable by a benign-looking second error.
 		result, tools = reconcileFreshRetryResult(firstResult, firstUsage, firstTools, retryResult, retryTools, retryErr)
 	}
+	// The backend proved this run's session must not be resumed (e.g. Claude
+	// cancelled every tool call, MS-2094). retired_session_id keeps every later
+	// lookup off it, even through older completed rows that still name it.
+	if result.RetireSession && retiredSessionID == "" {
+		retiredSessionID = result.SessionID
+		if retiredSessionID == "" {
+			retiredSessionID = task.PriorSessionID
+		}
+		taskLog.Warn("backend retired the run's session; the next task starts fresh", "session_id", retiredSessionID)
+	}
 	phaseRecorder.Mark(taskPhaseTurnCompleted)
 
 	elapsed := time.Since(taskStart).Round(time.Second)

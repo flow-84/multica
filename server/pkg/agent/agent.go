@@ -293,6 +293,11 @@ type Result struct {
 	// requested session from future lookups. Backends must not set this together
 	// with ResumeRejected; the latter means the session is permanently unusable.
 	ResumeRejectedTransient bool
+	// RetireSession is positive evidence that SessionID, though it resumed
+	// fine, must not be resumed by a later task: the run's own transcript
+	// would steer the next turn wrong. Unlike ResumeRejected it does not ask
+	// for an in-turn fresh retry; the daemon only reports the id as retired.
+	RetireSession bool
 	// codexInitializeRetrySafe is provider-internal evidence that an
 	// initialize timeout happened before semantic activity and after the
 	// process tree was reaped. It is intentionally not part of the public
