@@ -25,8 +25,8 @@ export const P_CRM = '7699726c-e49d-4382-b8d0-50800065aa28'
 export const BUILDER = '1d76643a-7409-477f-9436-d29e0ffd2275'
 export const CLAUDE = 'b86596ff-926e-475c-95c6-5415625b27b6'
 
-const iso = (msAgo: number) => new Date(Date.now() - msAgo).toISOString().replace(/\.\d+Z$/, 'Z')
-const HOUR = 3_600_000
+export const iso = (msAgo: number) => new Date(Date.now() - msAgo).toISOString().replace(/\.\d+Z$/, 'Z')
+export const HOUR = 3_600_000
 
 export interface FakeMultica {
   url: string
@@ -38,7 +38,7 @@ export interface FakeMultica {
   expired: boolean
 }
 
-function fakeIssue(n: number, o: Partial<Issue>): Issue {
+export function fakeIssue(n: number, o: Partial<Issue>): Issue {
   return {
     id: `0000000${n}-0000-0000-0000-000000000000`,
     identifier: `MS-${n}`,
@@ -135,7 +135,8 @@ export async function startFakeMultica(): Promise<FakeMultica> {
     }
     if (req.method === 'GET' && p === '/api/issues/search') {
       const q = (url.searchParams.get('q') ?? '').toLowerCase()
-      return send(200, { issues: state.issues.filter((i) => i.title.toLowerCase().includes(q)) })
+      const limit = Math.min(Number(url.searchParams.get('limit') ?? 20), 50)
+      return send(200, { issues: state.issues.filter((i) => i.title.toLowerCase().includes(q)).slice(0, limit) })
     }
     if (req.method === 'GET' && p === '/api/issues') {
       const statuses = url.searchParams.get('statuses')?.split(',')
@@ -144,7 +145,12 @@ export async function startFakeMultica(): Promise<FakeMultica> {
       const list = state.issues.filter(
         (i) => (!statuses || statuses.includes(i.status)) && (!project || i.project_id === project) && (!assignee || i.assignee_id === assignee),
       )
-      return send(200, { issues: list, has_more: false })
+      // Like the server: sort column and direction, a page capped at 100, total over all matches.
+      const col = (url.searchParams.get('sort') ?? 'created_at') as 'created_at' | 'updated_at'
+      const dir = url.searchParams.get('direction') === 'asc' ? 1 : -1
+      list.sort((x, y) => dir * x[col].localeCompare(y[col]))
+      const limit = Math.min(Number(url.searchParams.get('limit') ?? 50), 100)
+      return send(200, { issues: list.slice(0, limit), total: list.length, has_more: list.length > limit })
     }
     if (req.method === 'POST' && p === '/api/issues') {
       const b = await body(req)

@@ -21,7 +21,7 @@ Die Android-App übernimmt den Connector automatisch aus dem Konto.
 
 | Werkzeug | Zweck |
 | --- | --- |
-| `list_issues` | Issues filtern nach Projekt, Status, Zuständigem, Zeitraum (`days`) oder Suchbegriff (`query`). Ohne Status kommen die offenen. |
+| `list_issues` | Issues filtern nach Projekt, Status, Zuständigem, Zeitraum (`days`) oder Suchbegriff (`query`). Ohne Status kommen die offenen. Die Zahl ist die Gesamtzahl aus Multica. Wo eine Seitengrenze greift (100 Treffer, Suche 50), heißt es „mindestens“. |
 | `get_issue` | Ein Issue mit Beschreibung und den letzten drei Kommentaren |
 | `create_issue` | Issue anlegen (Projekt, Titel, Beschreibung, Zuständiger, Status, Priorität). Standard ist `backlog`. |
 | `update_issue` | Status und/oder Zuständigen ändern. `niemand` entfernt den Zuständigen. |
@@ -81,7 +81,7 @@ claude.ai fragt zuerst `server/discover` mit einer neueren Protokollversion im H
 ```bash
 cd tools/claude-connector
 npm ci
-npm test          # 36 Tests: OAuth Ende zu Ende und alle Werkzeuge gegen eine nachgebaute Multica-API
+npm test          # 41 Tests: OAuth Ende zu Ende, alle Werkzeuge und Seitengrenzen gegen eine nachgebaute Multica-API
 npm run typecheck
 ```
 

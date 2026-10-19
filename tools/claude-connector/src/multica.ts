@@ -145,14 +145,18 @@ export class MulticaApi {
     return list<Runtime>(await this.req('GET', `/api/runtimes?workspace_id=${this.workspaceId}`), 'runtimes')
   }
 
-  async listIssues(q: { projectId?: string; statuses?: string[]; assigneeId?: string; limit: number }): Promise<Issue[]> {
-    const p = new URLSearchParams({ workspace_id: this.workspaceId, limit: String(q.limit), sort: 'created_at', direction: 'desc' })
+  /** Most recently changed first. The server caps a page at 100; `total` counts every match. */
+  async listIssues(q: { projectId?: string; statuses?: string[]; assigneeId?: string; limit: number }): Promise<{ issues: Issue[]; total: number }> {
+    const p = new URLSearchParams({ workspace_id: this.workspaceId, limit: String(q.limit), sort: 'updated_at', direction: 'desc' })
     if (q.projectId) p.set('project_id', q.projectId)
     if (q.statuses?.length) p.set('statuses', q.statuses.join(','))
     if (q.assigneeId) p.set('assignee_id', q.assigneeId)
-    return list<Issue>(await this.req('GET', `/api/issues?${p}`), 'issues')
+    const r = await this.req<{ issues?: Issue[]; total?: number }>('GET', `/api/issues?${p}`)
+    const issues = list<Issue>(r, 'issues')
+    return { issues, total: typeof r?.total === 'number' ? r.total : issues.length }
   }
 
+  /** The server caps search at 50 hits and returns no total. */
   async searchIssues(query: string, limit: number): Promise<Issue[]> {
     const p = new URLSearchParams({ q: query, limit: String(limit), include_closed: 'true' })
     return list<Issue>(await this.req('GET', `/api/issues/search?${p}`), 'issues')

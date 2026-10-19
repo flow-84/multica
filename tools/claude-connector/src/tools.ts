@@ -164,23 +164,41 @@ export const listIssuesInput = {
   limit: z.number().int().min(1).max(25).optional().describe('Höchstens so viele vorlesen, Standard 8.'),
 }
 
+export const LIST_PAGE = 100
+export const SEARCH_PAGE = 50
+
 async function listIssues(c: Ctx, a: z.infer<z.ZodObject<typeof listIssuesInput>>): Promise<string> {
   const limit = a.limit ?? 8
   const [project, people] = await Promise.all([a.project ? resolveProject(c.api, a.project) : undefined, loadPeople(c.api)])
   const assignee = a.assignee ? resolveAssignee(people, a.assignee, c.userId) : undefined
+  const since = a.days ? c.nowMs - a.days * 86_400_000 : null
+  const inRange = (i: Issue) => since === null || Date.parse(i.updated_at) >= since
   let issues: Issue[]
+  /** Spoken count: exact, or "mindestens N" when a capped page may hide further matches. */
+  let count: number
+  let atLeast = false
   if (a.query) {
-    issues = await c.api.searchIssues(a.query, 50)
-    if (project) issues = issues.filter((i) => i.project_id === project.id)
-    if (assignee) issues = issues.filter((i) => i.assignee_id === assignee.id)
-    if (a.status?.length) issues = issues.filter((i) => a.status!.includes(i.status as Status))
+    const hits = await c.api.searchIssues(a.query, SEARCH_PAGE)
+    issues = hits.filter(
+      (i) =>
+        (!project || i.project_id === project.id) &&
+        (!assignee || i.assignee_id === assignee.id) &&
+        (!a.status?.length || a.status.includes(i.status as Status)) &&
+        inRange(i),
+    )
+    count = issues.length
+    atLeast = hits.length >= SEARCH_PAGE && issues.length > 0
   } else {
     const statuses = a.status?.length ? a.status : STATUS.filter((s) => !CLOSED.has(s))
-    issues = await c.api.listIssues({ projectId: project?.id, statuses, assigneeId: assignee?.id, limit: 100 })
-  }
-  if (a.days) {
-    const since = c.nowMs - a.days * 86_400_000
-    issues = issues.filter((i) => Date.parse(i.updated_at) >= since)
+    const page = await c.api.listIssues({ projectId: project?.id, statuses, assigneeId: assignee?.id, limit: LIST_PAGE })
+    // The page is sorted by updated_at, so the time filter only cuts its tail.
+    issues = page.issues.filter(inRange)
+    if (since === null) {
+      count = page.total
+    } else {
+      count = issues.length
+      atLeast = page.issues.length >= LIST_PAGE && issues.length === page.issues.length && page.total > issues.length
+    }
   }
   issues.sort((x, y) => y.updated_at.localeCompare(x.updated_at))
 
@@ -193,10 +211,11 @@ async function listIssues(c: Ctx, a: z.infer<z.ZodObject<typeof listIssuesInput>
     .filter(Boolean)
     .join(' ')
   const what = a.status?.length ? `mit Status ${a.status.map(statusDe).join(' oder ')}` : a.query ? '' : 'offen'
-  const head = `${issues.length === 0 ? 'Keine' : issues.length} ${issues.length === 1 ? 'Issue' : 'Issues'} ${[what, scope].filter(Boolean).join(' ')}`.trim()
-  if (issues.length === 0) return `${head}.`
+  const number = count === 0 ? 'Keine' : atLeast ? `Mindestens ${count}` : String(count)
+  const head = `${number} ${count === 1 && !atLeast ? 'Issue' : 'Issues'} ${[what, scope].filter(Boolean).join(' ')}`.trim()
+  if (count === 0) return `${head}.`
   const shown = issues.slice(0, limit)
-  const more = issues.length > shown.length ? ` Das waren die ${shown.length} zuletzt geänderten.` : ''
+  const more = count > shown.length || atLeast ? ` Das waren die ${shown.length} zuletzt geänderten.` : ''
   return `${head}, zuletzt geänderte zuerst. ${shown.map((i) => issueLine(i, people, c.nowMs)).join(' ')}${more}`
 }
 
@@ -299,7 +318,7 @@ async function systemStatus(c: Ctx): Promise<string> {
   const [runtimes, agents, working] = await Promise.all([
     c.api.runtimes(),
     c.api.agents(),
-    c.api.listIssues({ statuses: ['in_progress'], limit: 100 }),
+    c.api.listIssues({ statuses: ['in_progress'], limit: 1 }),
   ])
   const online = runtimes.filter((r) => r.status === 'online')
   const parts: string[] = []
@@ -319,7 +338,7 @@ async function systemStatus(c: Ctx): Promise<string> {
       ? `${busy.length} von ${active.length} Agenten arbeiten gerade: ${busy.map((a) => a.name).join(', ')}.`
       : `Alle ${active.length} Agenten sind frei.`,
   )
-  parts.push(`${working.length === 0 ? 'Kein' : working.length} ${working.length === 1 ? 'Issue ist' : 'Issues sind'} in Arbeit.`)
+  parts.push(`${working.total === 0 ? 'Kein' : working.total} ${working.total === 1 ? 'Issue ist' : 'Issues sind'} in Arbeit.`)
   return parts.join(' ')
 }
 
