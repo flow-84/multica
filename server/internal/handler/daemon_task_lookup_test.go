@@ -239,3 +239,48 @@ func TestGetTaskStatus_RecordsDaemonHold(t *testing.T) {
 		}
 	})
 }
+
+// TestMarkTaskWaitingLocalDirectory_RefreshesReasonWhileWaiting pins MS-2472:
+// the daemon re-marks a parked task when the path lock passes to another
+// holder, and that second call must update wait_reason instead of failing on
+// a row that is no longer 'dispatched'.
+func TestMarkTaskWaitingLocalDirectory_RefreshesReasonWhileWaiting(t *testing.T) {
+	runtimeID := dbfx.Runtime(t, "MS-2472 wait runtime")
+	agentID := dbfx.Agent(t, "MS-2472 wait agent", runtimeID)
+	issueID := dbfx.Issue(t, "MS-2472 wait issue")
+	taskID := dbfx.Task(t, agentID, testutil.Cols{
+		"runtime_id": runtimeID, "issue_id": issueID, "status": "dispatched", "dispatched_at": testutil.Raw("now()"),
+	})
+	mark := func(reason string) {
+		t.Helper()
+		req := newDaemonTokenRequest(http.MethodPost, "/api/daemon/tasks/"+taskID+"/wait-local-directory",
+			map[string]string{"reason": reason}, testWorkspaceID, "test-daemon")
+		req = withURLParam(req, "taskId", taskID)
+		testutil.Call(t, testHandler.MarkTaskWaitingLocalDirectory, req).Want(http.StatusOK)
+	}
+	waitState := func() (status, reason string) {
+		t.Helper()
+		var waitReason *string
+		if err := testPool.QueryRow(context.Background(),
+			`SELECT status, wait_reason FROM agent_task_queue WHERE id = $1`, taskID,
+		).Scan(&status, &waitReason); err != nil {
+			t.Fatal(err)
+		}
+		if waitReason != nil {
+			reason = *waitReason
+		}
+		return status, reason
+	}
+
+	mark("m2s-crm (held by task 01a15e19)")
+	mark("m2s-crm (held by task 01a15de5)")
+	if status, reason := waitState(); status != "waiting_local_directory" || reason != "m2s-crm (held by task 01a15de5)" {
+		t.Fatalf("status=%q reason=%q, want waiting_local_directory with the new holder", status, reason)
+	}
+
+	dbfx.Exec(t, "UPDATE agent_task_queue SET status = 'running', started_at = now() WHERE id = $1", taskID)
+	req := newDaemonTokenRequest(http.MethodPost, "/api/daemon/tasks/"+taskID+"/wait-local-directory",
+		map[string]string{"reason": "late"}, testWorkspaceID, "test-daemon")
+	req = withURLParam(req, "taskId", taskID)
+	testutil.Call(t, testHandler.MarkTaskWaitingLocalDirectory, req).Want(http.StatusBadRequest)
+}

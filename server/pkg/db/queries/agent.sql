@@ -1013,14 +1013,16 @@ FOR UPDATE;
 -- human-readable hint (typically the contested path) that the UI surfaces
 -- alongside the status.
 --
--- The CHECK only allows the transition from 'dispatched' so a daemon can't
--- mark an already-running or terminal task as waiting; the StartAgentTask
--- mutation handles the reverse transition once the lock is acquired.
+-- The CHECK only allows 'dispatched' and 'waiting_local_directory' so a daemon
+-- can't mark an already-running or terminal task as waiting; the StartAgentTask
+-- mutation handles the reverse transition once the lock is acquired. A task
+-- that is already waiting is re-marked when the lock passes to another holder,
+-- which refreshes wait_reason (MS-2472).
 UPDATE agent_task_queue
 SET status = 'waiting_local_directory',
     wait_reason = $2,
     prepare_lease_expires_at = now() + make_interval(secs => @prepare_lease_secs::double precision)
-WHERE id = $1 AND status = 'dispatched'
+WHERE id = $1 AND status IN ('dispatched', 'waiting_local_directory')
 RETURNING *;
 
 -- name: CompleteAgentTask :one
