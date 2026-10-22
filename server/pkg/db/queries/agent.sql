@@ -713,10 +713,19 @@ WHERE id = $1;
 -- Hot-path status polling needs only the task status and the owning agent's
 -- workspace for authorization. Keep this independent of optional source links
 -- (issue, chat session, autopilot run) so it needs no source-entity lookup.
-SELECT atq.status, a.workspace_id
+SELECT atq.status, a.workspace_id, atq.daemon_seen_at
 FROM agent_task_queue atq
 JOIN agent a ON a.id = atq.agent_id
 WHERE atq.id = $1;
+
+-- name: TouchAgentTaskDaemonSeen :exec
+-- Records that the owning daemon still holds this in-flight task. The status
+-- poll calls it only when daemon_seen_at is older than its refresh window, so a
+-- 5s poll writes about once a minute.
+UPDATE agent_task_queue
+SET daemon_seen_at = now()
+WHERE id = $1
+  AND status IN ('dispatched', 'running', 'waiting_local_directory');
 
 -- name: GetAgentTaskForDelegatedFailureUpdate :one
 -- Serializes the idempotent delegated-failure recovery signal for one failed
@@ -1004,14 +1013,16 @@ FOR UPDATE;
 -- human-readable hint (typically the contested path) that the UI surfaces
 -- alongside the status.
 --
--- The CHECK only allows the transition from 'dispatched' so a daemon can't
--- mark an already-running or terminal task as waiting; the StartAgentTask
--- mutation handles the reverse transition once the lock is acquired.
+-- The CHECK only allows 'dispatched' and 'waiting_local_directory' so a daemon
+-- can't mark an already-running or terminal task as waiting; the StartAgentTask
+-- mutation handles the reverse transition once the lock is acquired. A task
+-- that is already waiting is re-marked when the lock passes to another holder,
+-- which refreshes wait_reason (MS-2472).
 UPDATE agent_task_queue
 SET status = 'waiting_local_directory',
     wait_reason = $2,
     prepare_lease_expires_at = now() + make_interval(secs => @prepare_lease_secs::double precision)
-WHERE id = $1 AND status = 'dispatched'
+WHERE id = $1 AND status IN ('dispatched', 'waiting_local_directory')
 RETURNING *;
 
 -- name: CompleteAgentTask :one
@@ -1366,7 +1377,8 @@ RETURNING *;
 -- the wait (with its own ctx-driven timeout) and a legitimate queue ahead
 -- of this task can exceed the dispatch / running timeouts without being
 -- "stuck". If the daemon dies, RecoverOrphanedTasksForRuntime reclaims
--- those rows at restart.
+-- those rows at restart; if it lives but loses the task,
+-- ListUntrackedInFlightTasks does.
 UPDATE agent_task_queue
 SET status = 'failed', completed_at = now(), error = 'task timed out',
     failure_reason = 'timeout',
@@ -1409,6 +1421,43 @@ WHERE (
       )
     )
   )
+RETURNING *;
+
+-- name: ListUntrackedInFlightTasks :many
+-- In-flight tasks whose runtime is heartbeating but whose daemon stopped
+-- polling them. A live daemon polls every in-flight task's status every 5s (see
+-- watchTaskCancellation), so a fresh runtime heartbeat next to a long-silent
+-- task means the daemon no longer tracks it: its run ended and the terminal
+-- report was lost (MS-2563). An offline runtime is left to
+-- FailTasksForOfflineRuntimes and its reconnect grace. Rows never polled since
+-- the column existed fall back to started_at / dispatched_at.
+SELECT atq.id, COALESCE(atq.daemon_seen_at, atq.started_at, atq.dispatched_at)::timestamptz AS last_seen_at
+FROM agent_task_queue atq
+JOIN agent_runtime r ON r.id = atq.runtime_id
+WHERE atq.status IN ('running', 'waiting_local_directory')
+  AND COALESCE(atq.daemon_seen_at, atq.started_at, atq.dispatched_at) <
+      now() - make_interval(secs => @untracked_grace_secs::double precision)
+  AND r.status = 'online'
+  AND COALESCE(r.last_seen_at, r.updated_at) >=
+      now() - make_interval(secs => @runtime_stale_secs::double precision)
+ORDER BY atq.id
+LIMIT @max_per_tick;
+
+-- name: FailUntrackedInFlightTask :many
+-- Fails one row found by ListUntrackedInFlightTasks, but only if no status poll
+-- arrived since the sweeper first saw it. The caller waits a confirmation
+-- window between the two, which a daemon reconnecting after an outage uses to
+-- poll again; its poll moves daemon_seen_at and makes this a no-op.
+UPDATE agent_task_queue
+SET status = 'failed',
+    completed_at = now(),
+    error = 'daemon stopped tracking this task while its runtime stayed online; the run ended without a terminal report',
+    failure_reason = 'runtime_recovery',
+    wait_reason = NULL,
+    prepare_lease_expires_at = NULL
+WHERE id = @id
+  AND status IN ('running', 'waiting_local_directory')
+  AND COALESCE(daemon_seen_at, started_at, dispatched_at) = @last_seen_at::timestamptz
 RETURNING *;
 
 -- name: ExpireStaleQueuedTasks :many

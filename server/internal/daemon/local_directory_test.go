@@ -1213,3 +1213,53 @@ func TestIssueTasksStillSerialiseOnPathMutex(t *testing.T) {
 	}
 	release()
 }
+
+// MS-2472: the wait hint named the first holder for the whole wait, so a task
+// queued behind a lock that had long moved on looked stuck on a finished run.
+func TestLocalPathLockerReportsHolderChangesWhileParked(t *testing.T) {
+	previous := pathLockHolderPollInterval
+	pathLockHolderPollInterval = 5 * time.Millisecond
+	t.Cleanup(func() { pathLockHolderPollInterval = previous })
+
+	locker := NewLocalPathLocker()
+	releaseA, err := locker.Acquire(context.Background(), "/repo", "task-a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes := make(chan string, 4)
+	var firstHolder string
+	done := make(chan error, 1)
+	go func() {
+		release, err := locker.AcquireWithHolderUpdates(context.Background(), "/repo", "task-c",
+			func(holder string) { firstHolder = holder },
+			func(holder string) { changes <- holder })
+		if release != nil {
+			release()
+		}
+		done <- err
+	}()
+
+	// Hand the lock from task-a to task-b without a free gap, as a queued
+	// in-place run does when it wins the mutex right after the first one ends.
+	entry := locker.locks["/repo"]
+	time.Sleep(20 * time.Millisecond)
+	entry.mu2.Lock()
+	entry.holderID = "task-b"
+	entry.mu2.Unlock()
+	select {
+	case got := <-changes:
+		if got != "task-b" {
+			t.Fatalf("holder change = %q, want task-b", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("parked acquire never reported the new holder")
+	}
+	if firstHolder != "task-a" {
+		t.Fatalf("initial holder = %q, want task-a", firstHolder)
+	}
+
+	releaseA()
+	if err := <-done; err != nil {
+		t.Fatalf("acquire after release: %v", err)
+	}
+}

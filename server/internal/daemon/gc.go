@@ -537,10 +537,31 @@ func (d *Daemon) orphanByMTime(taskDir, reason string) gcAction {
 		return gcActionSkip
 	}
 	if time.Since(info.ModTime()) > d.cfg.GCOrphanTTL {
+		if d.envHoldsUnsavedWork(taskDir) {
+			return gcActionSkip
+		}
 		d.logger.Info("gc: orphan directory", "dir", taskDir, "reason", reason, "age", time.Since(info.ModTime()).Round(time.Hour))
 		return gcActionOrphan
 	}
 	return gcActionSkip
+}
+
+// gcUnsavedWorkScanDepth reaches taskDir/workdir/<repo>/<nested> and
+// taskDir/worktree/<nested>, where task checkouts live.
+const gcUnsavedWorkScanDepth = 3
+
+// envHoldsUnsavedWork guards every full deletion that is not the closed-parent
+// policy: a git checkout in the env root with uncommitted or unpushed work keeps
+// the whole directory. The parent's open state alone already protects it on
+// self-host; this also covers orphans and the opt-in completed-task TTL, where
+// nothing else checks what the directory still holds (MS-2470).
+func (d *Daemon) envHoldsUnsavedWork(taskDir string) bool {
+	checkouts := execenv.FindCheckoutsWithUnsavedWork(taskDir, gcUnsavedWorkScanDepth)
+	if len(checkouts) == 0 {
+		return false
+	}
+	d.logger.Warn("gc: keeping directory that holds unsaved git work", "dir", taskDir, "checkouts", checkouts)
+	return true
 }
 
 // isAccessNotFound detects the 404 returned by gc-check endpoints. The same
@@ -608,7 +629,8 @@ func (d *Daemon) gcDecisionIssueResult(taskDir string, meta *execenv.GCMeta, res
 		!meta.LocalDirectory &&
 		!meta.CompletedAt.IsZero() &&
 		recognized &&
-		time.Since(meta.CompletedAt) > d.cfg.GCCompletedTaskTTL {
+		time.Since(meta.CompletedAt) > d.cfg.GCCompletedTaskTTL &&
+		(terminal || !d.envHoldsUnsavedWork(taskDir)) {
 		d.logger.Info("gc: completed task eligible for full cleanup",
 			"dir", filepath.Base(taskDir),
 			"kind", "issue",

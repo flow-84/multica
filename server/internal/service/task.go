@@ -5982,6 +5982,14 @@ func (s *TaskService) RecoverOrphanedTasksForRuntime(ctx context.Context, runtim
 	})
 }
 
+// FailUntrackedInFlightTask fails one in-flight task its daemon stopped
+// tracking, unless a status poll arrived since lastSeenAt.
+func (s *TaskService) FailUntrackedInFlightTask(ctx context.Context, arg db.FailUntrackedInFlightTaskParams) ([]db.AgentTaskQueue, error) {
+	return s.terminateTasksInTx(ctx, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
+		return qtx.FailUntrackedInFlightTask(ctx, arg)
+	})
+}
+
 // CancelTasksForArchivedAgent cancels every active task belonging to an agent
 // being archived and settles their recovery receipts in the same transaction.
 //

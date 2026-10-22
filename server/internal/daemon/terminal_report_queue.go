@@ -81,6 +81,15 @@ type terminalReportNamespaceStats struct {
 	stats terminalReportStoreStats
 }
 
+// errTerminalReportInMemory marks an enqueue whose file write failed but whose
+// report is still queued in memory: replay delivers it like a persisted one and
+// keeps retrying the write, it just does not survive a daemon restart.
+var errTerminalReportInMemory = errors.New("terminal report queued in memory only")
+
+// errTerminalReportConflict marks an enqueue refused because a different
+// payload for the same task is already pending. That original stays queued.
+var errTerminalReportConflict = errors.New("terminal report conflicts with the original pending payload")
+
 // terminalReportStore is a file-backed outbox. One file per task keeps each
 // acknowledgement independent, and hashing task IDs prevents a malformed or
 // tampered task ID from becoming a path traversal primitive.
@@ -89,6 +98,11 @@ type terminalReportStore struct {
 	namespace string
 	dir       string
 	mu        sync.Mutex
+	// memory holds reports whose file write failed (full or read-only disk).
+	// Without it a run that ended while the disk was full and the server was
+	// unreachable lost its terminal report and stayed running forever
+	// (MS-2563). Keyed by file name; list() retries the write on every pass.
+	memory map[string]terminalTaskReport
 }
 
 func newTerminalReportStore(cfg Config) *terminalReportStore {
@@ -213,10 +227,30 @@ func (s *terminalReportStore) enqueue(report terminalTaskReport) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	name := terminalReportFileName(report.taskID)
+	if existing, ok := s.memory[name]; ok {
+		if existing != report {
+			return fmt.Errorf("task %s: %w", report.taskID, errTerminalReportConflict)
+		}
+		return errTerminalReportInMemory
+	}
+	err = s.persistLocked(name, report, record)
+	if err == nil || errors.Is(err, errTerminalReportConflict) {
+		return err
+	}
+	if s.memory == nil {
+		s.memory = make(map[string]terminalTaskReport)
+	}
+	s.memory[name] = report
+	return fmt.Errorf("%w: %w", errTerminalReportInMemory, err)
+}
+
+// persistLocked writes one report unless an identical one is already on disk.
+// Callers hold the store mutex.
+func (s *terminalReportStore) persistLocked(name string, report terminalTaskReport, record persistedTerminalTaskReport) error {
 	if err := s.ensureDir(); err != nil {
 		return err
 	}
-	name := terminalReportFileName(report.taskID)
 	path := filepath.Join(s.dir, name)
 	if existingBody, readErr := os.ReadFile(path); readErr == nil {
 		existing, decodeErr := decodePersistedTerminalReport(existingBody)
@@ -228,7 +262,7 @@ func (s *terminalReportStore) enqueue(report terminalTaskReport) error {
 			return fmt.Errorf("existing terminal report %s is invalid: %w", name, decodeErr)
 		}
 		if existingReport != report {
-			return fmt.Errorf("terminal report for task %s conflicts with the original pending payload", report.taskID)
+			return fmt.Errorf("task %s: %w", report.taskID, errTerminalReportConflict)
 		}
 		return nil
 	} else if !errors.Is(readErr, os.ErrNotExist) {
@@ -236,6 +270,21 @@ func (s *terminalReportStore) enqueue(report terminalTaskReport) error {
 	}
 
 	return writeTerminalReportRecord(s.dir, name, record)
+}
+
+// persistMemoryLocked retries the file write for every in-memory report so it
+// becomes restart-safe as soon as the disk accepts it again. An original
+// already on disk wins, as in enqueue. Callers hold the store mutex.
+func (s *terminalReportStore) persistMemoryLocked() {
+	for name, report := range s.memory {
+		record, err := persistedTerminalReport(report, time.Now())
+		if err != nil {
+			continue
+		}
+		if err := s.persistLocked(name, report, record); err == nil || errors.Is(err, errTerminalReportConflict) {
+			delete(s.memory, name)
+		}
+	}
 }
 
 // writeTerminalReportRecord publishes a fully-flushed record with an atomic
@@ -294,6 +343,22 @@ func decodePersistedTerminalReport(body []byte) (persistedTerminalTaskReport, er
 func (s *terminalReportStore) list() ([]pendingTerminalTaskReport, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.persistMemoryLocked()
+	items, err := s.listDiskLocked()
+	onDisk := make(map[string]bool, len(items))
+	for _, item := range items {
+		onDisk[item.fileName] = true
+	}
+	for name, report := range s.memory {
+		if !onDisk[name] {
+			items = append(items, pendingTerminalTaskReport{fileName: name, report: report})
+		}
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].fileName < items[j].fileName })
+	return items, err
+}
+
+func (s *terminalReportStore) listDiskLocked() ([]pendingTerminalTaskReport, error) {
 	if err := s.ensureDir(); err != nil {
 		return nil, err
 	}
@@ -336,7 +401,6 @@ func (s *terminalReportStore) list() ([]pendingTerminalTaskReport, error) {
 		}
 		items = append(items, pendingTerminalTaskReport{fileName: entry.Name(), report: report})
 	}
-	sort.Slice(items, func(i, j int) bool { return items[i].fileName < items[j].fileName })
 	return items, errors.Join(errs...)
 }
 
@@ -419,6 +483,12 @@ func (s *terminalReportStore) acknowledge(item pendingTerminalTaskReport) error 
 	defer s.mu.Unlock()
 	if item.fileName != terminalReportFileName(item.report.taskID) {
 		return errors.New("terminal report acknowledgement does not match task id")
+	}
+	if _, inMemory := s.memory[item.fileName]; inMemory {
+		// persistMemoryLocked drops an entry once its file exists, so a
+		// memory-only report has no file to remove.
+		delete(s.memory, item.fileName)
+		return nil
 	}
 	path := filepath.Join(s.dir, item.fileName)
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -576,6 +646,7 @@ func (s *terminalReportStore) stats() (terminalReportStoreStats, error) {
 	} else {
 		stats.PendingCount, stats.PendingBytes = count, bytes
 	}
+	stats.PendingCount += len(s.memory)
 	if count, bytes, err := terminalReportDirectoryStats(s.failedDir()); err != nil {
 		errs = append(errs, fmt.Errorf("scan failed terminal reports: %w", err))
 	} else {

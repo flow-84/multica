@@ -6164,12 +6164,7 @@ func (d *Daemon) acquireLocalDirectoryLockIfNeeded(ctx context.Context, task Tas
 		}
 	}()
 
-	onWait := func(holder string) {
-		// LocalPathLocker invokes onWait synchronously and at most once for an
-		// Acquire call. Count the actual mutex wait even if the best-effort
-		// server status update below fails.
-		d.resourceWaitTasks.Add(1)
-		waitCounted = true
+	markWaiting := func(holder string) {
 		// Rendered to the user, so it names the directory rather than its path
 		// (see localDirectoryAssignment.DisplayName). The absolute path stays in
 		// the daemon's own logs, which is where an operator debugging a wedged
@@ -6190,6 +6185,14 @@ func (d *Daemon) acquireLocalDirectoryLockIfNeeded(ctx context.Context, task Tas
 			// The UI just won't see the explicit "waiting" badge.
 			taskLog.Warn("local_directory: mark waiting status failed", "error", waitErr)
 		}
+	}
+	onWait := func(holder string) {
+		// LocalPathLocker invokes onWait synchronously and at most once for an
+		// Acquire call. Count the actual mutex wait even if the best-effort
+		// server status update below fails.
+		d.resourceWaitTasks.Add(1)
+		waitCounted = true
+		markWaiting(holder)
 		prepareLeaseOnce.Do(func() {
 			stopPrepareLease = d.startTaskPrepareLeaseExtender(waitCtx, task, taskLog)
 		})
@@ -6209,7 +6212,7 @@ func (d *Daemon) acquireLocalDirectoryLockIfNeeded(ctx context.Context, task Tas
 			}()
 		})
 	}
-	release, err = d.localPathLocks.Acquire(waitCtx, assignment.RealPath, task.ID, onWait)
+	release, err = d.localPathLocks.AcquireWithHolderUpdates(waitCtx, assignment.RealPath, task.ID, onWait, markWaiting)
 	if err != nil {
 		// If the wait was cut short because the server finalized the task
 		// (terminal state) or deleted the row, the row is already in a
@@ -6338,19 +6341,23 @@ func (d *Daemon) reportTerminalTask(parentCtx context.Context, report terminalTa
 	}
 	defer release()
 
-	persisted := false
+	queued := false
 	if d.terminalReports != nil {
 		if err := d.terminalReports.enqueue(report); err != nil {
 			// Durability is an availability improvement, not a prerequisite for
 			// the online callback. A read-only/full disk must not turn a request
-			// that the server could accept right now into a stuck task.
+			// that the server could accept right now into a stuck task, and a
+			// report the disk refused stays queued in memory so a server that is
+			// also unreachable right now still gets it on replay (MS-2563).
+			queued = errors.Is(err, errTerminalReportInMemory)
 			d.logger.Error("persist terminal task report; continuing with direct delivery",
 				"task", report.taskID,
 				"kind", report.kind,
+				"queued_in_memory", queued,
 				"error", err,
 			)
 		} else {
-			persisted = true
+			queued = true
 		}
 	}
 
@@ -6359,16 +6366,16 @@ func (d *Daemon) reportTerminalTask(parentCtx context.Context, report terminalTa
 	err := d.sendTerminalTaskReport(ctx, report, defaultTerminalRetrySchedule)
 	if err != nil {
 		quarantined := false
-		if persisted {
+		if queued {
 			item := pendingTerminalTaskReport{fileName: terminalReportFileName(report.taskID), report: report}
 			quarantined = d.handleTerminalReportDeliveryError(ctx, item, err)
 		}
-		if persisted && !quarantined {
+		if queued && !quarantined {
 			d.signalTerminalReportReplay()
 		}
 		return err
 	}
-	if !persisted {
+	if !queued {
 		return nil
 	}
 	item := pendingTerminalTaskReport{fileName: terminalReportFileName(report.taskID), report: report}
@@ -8203,13 +8210,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			// LocalPathLocker invokes onWait synchronously, in this goroutine,
 			// at most once per Acquire — see the in-place call site.
 			waitCounted := false
-			release, lockErr := d.localPathLocks.Acquire(waitCtx, localAssignment.RealPath, task.ID, func(holder string) {
-				d.resourceWaitTasks.Add(1)
-				waitCounted = true
-				if prepareTimer.Stop() {
-					preparePaused = true
-					prepareRemaining = time.Until(prepareDeadline)
-				}
+			markWaiting := func(holder string) {
 				reason := fmt.Sprintf("local_directory %s", localAssignment.AbsPath)
 				if holder != "" {
 					reason = fmt.Sprintf("%s (held by task %s)", reason, shortID(holder))
@@ -8221,6 +8222,15 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 					// show the explicit "waiting" badge.
 					taskLog.Warn("local_directory: mark waiting status failed", "error", waitErr)
 				}
+			}
+			release, lockErr := d.localPathLocks.AcquireWithHolderUpdates(waitCtx, localAssignment.RealPath, task.ID, func(holder string) {
+				d.resourceWaitTasks.Add(1)
+				waitCounted = true
+				if prepareTimer.Stop() {
+					preparePaused = true
+					prepareRemaining = time.Until(prepareDeadline)
+				}
+				markWaiting(holder)
 				cancelled := d.watchTaskCancellation(waitCtx, task.ID, pollInterval, taskLog)
 				go func() {
 					select {
@@ -8229,7 +8239,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 					case <-waitCtx.Done():
 					}
 				}()
-			})
+			}, markWaiting)
 			if waitCounted {
 				d.resourceWaitTasks.Add(-1)
 			}

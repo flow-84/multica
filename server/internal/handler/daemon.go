@@ -4158,7 +4158,8 @@ type TaskWaitLocalDirectoryRequest struct {
 // MarkTaskWaitingLocalDirectory transitions a dispatched task to
 // waiting_local_directory. Called by the daemon when, after claiming a task
 // whose project carries a local_directory resource, it discovers another
-// in-flight task already holds the path's mutex.
+// in-flight task already holds the path's mutex, and again with a new reason
+// whenever that mutex passes to another holder while the task still waits.
 func (h *Handler) MarkTaskWaitingLocalDirectory(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskId")
 
@@ -4976,7 +4977,28 @@ func (h *Handler) GetTaskStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The poll itself is the proof that the daemon still holds this task; the
+	// untracked-task sweeper fails rows whose polls stopped (MS-2563). Refresh
+	// at most once per window so the 5s poll stays a read almost every time.
+	if taskStatusProvesDaemonHold(task.Status) && (!task.DaemonSeenAt.Valid || time.Since(task.DaemonSeenAt.Time) >= daemonSeenRefreshInterval) {
+		if err := h.Queries.TouchAgentTaskDaemonSeen(r.Context(), taskUUID); err != nil {
+			slog.Warn("record daemon task poll failed", "task_id", taskID, "error", err)
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]string{"status": task.Status})
+}
+
+// daemonSeenRefreshInterval bounds how often a status poll rewrites
+// daemon_seen_at. It must stay far below the sweeper's untracked grace.
+const daemonSeenRefreshInterval = time.Minute
+
+func taskStatusProvesDaemonHold(status string) bool {
+	switch status {
+	case "dispatched", "running", "waiting_local_directory":
+		return true
+	}
+	return false
 }
 
 // FailTask marks a running task as failed.
