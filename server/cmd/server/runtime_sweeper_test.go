@@ -1332,3 +1332,99 @@ func unhex(c byte) byte {
 	}
 	return 0
 }
+
+// MS-2563: the daemon lost a running task (its terminal report never arrived)
+// while its runtime kept heartbeating, so FailStaleTasks spared the row for 21
+// hours. These tests drive untrackedTaskSweeper against that shape.
+func newUntrackedSweeperFixture(t *testing.T, taskStatus string) (agentID, taskID string, sweeper *untrackedTaskSweeper, clock *time.Time, queries *db.Queries, taskSvc *service.TaskService) {
+	t.Helper()
+	if testPool == nil {
+		t.Skip("no database connection")
+	}
+	issueID, agentID, taskID := setupSweeperTestFixture(t, "running")
+	t.Cleanup(func() { cleanupSweeperFixture(t, issueID, agentID) })
+	ctx := context.Background()
+	// The daemon's last poll was an hour ago; its runtime heartbeat is fresh.
+	if _, err := testPool.Exec(ctx, `
+		UPDATE agent_task_queue SET status = $2, daemon_seen_at = now() - interval '1 hour'
+		WHERE id = $1
+	`, taskID, taskStatus); err != nil {
+		t.Fatalf("seed untracked task: %v", err)
+	}
+	if _, err := testPool.Exec(ctx, `
+		UPDATE agent_runtime SET status = 'online', last_seen_at = now()
+		WHERE id = (SELECT runtime_id FROM agent WHERE id = $1)
+	`, agentID); err != nil {
+		t.Fatalf("refresh runtime heartbeat: %v", err)
+	}
+	now := time.Now()
+	clock = &now
+	sweeper = &untrackedTaskSweeper{now: func() time.Time { return *clock }}
+	queries = db.New(testPool)
+	taskSvc = service.NewTaskService(queries, testPool, nil, events.New())
+	return agentID, taskID, sweeper, clock, queries, taskSvc
+}
+
+func untrackedTaskState(t *testing.T, taskID string) (status, failureReason string) {
+	t.Helper()
+	var reason *string
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT status, failure_reason FROM agent_task_queue WHERE id = $1`, taskID,
+	).Scan(&status, &reason); err != nil {
+		t.Fatalf("read task: %v", err)
+	}
+	if reason != nil {
+		failureReason = *reason
+	}
+	return status, failureReason
+}
+
+func TestUntrackedTaskSweeperFailsTaskAfterConfirmWindow(t *testing.T) {
+	for _, status := range []string{"running", "waiting_local_directory"} {
+		t.Run(status, func(t *testing.T) {
+			_, taskID, sweeper, clock, queries, taskSvc := newUntrackedSweeperFixture(t, status)
+			ctx := context.Background()
+
+			sweeper.sweep(ctx, queries, taskSvc)
+			if got, _ := untrackedTaskState(t, taskID); got != status {
+				t.Fatalf("status after first sighting = %q, want %q until confirmed", got, status)
+			}
+
+			*clock = clock.Add(untrackedTaskConfirmWindow + time.Second)
+			sweeper.sweep(ctx, queries, taskSvc)
+			got, reason := untrackedTaskState(t, taskID)
+			if got != "failed" || reason != "runtime_recovery" {
+				t.Fatalf("status=%q reason=%q, want failed/runtime_recovery", got, reason)
+			}
+		})
+	}
+}
+
+func TestUntrackedTaskSweeperSparesTaskPolledDuringConfirmWindow(t *testing.T) {
+	_, taskID, sweeper, clock, queries, taskSvc := newUntrackedSweeperFixture(t, "running")
+	ctx := context.Background()
+
+	sweeper.sweep(ctx, queries, taskSvc)
+	// The daemon reconnects after an outage and polls the task again.
+	if err := queries.TouchAgentTaskDaemonSeen(ctx, parseUUID(taskID)); err != nil {
+		t.Fatalf("touch daemon_seen_at: %v", err)
+	}
+	*clock = clock.Add(untrackedTaskConfirmWindow + time.Second)
+	sweeper.sweep(ctx, queries, taskSvc)
+	if got, _ := untrackedTaskState(t, taskID); got != "running" {
+		t.Fatalf("status = %q, want running for a task its daemon polls again", got)
+	}
+}
+
+func TestUntrackedTaskSweeperLeavesOfflineRuntimeToReconnectGrace(t *testing.T) {
+	agentID, taskID, sweeper, clock, queries, taskSvc := newUntrackedSweeperFixture(t, "running")
+	setAgentRuntimeOffline(t, agentID, time.Hour)
+	ctx := context.Background()
+
+	sweeper.sweep(ctx, queries, taskSvc)
+	*clock = clock.Add(untrackedTaskConfirmWindow + time.Second)
+	sweeper.sweep(ctx, queries, taskSvc)
+	if got, _ := untrackedTaskState(t, taskID); got != "running" {
+		t.Fatalf("status = %q, want running: an offline runtime keeps its reconnect grace", got)
+	}
+}

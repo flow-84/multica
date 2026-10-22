@@ -104,6 +104,18 @@ const (
 	// delegatedFailureRecoveryBatchSize bounds the durable recovery-outbox
 	// replay so a historical backlog cannot monopolise the runtime sweep tick.
 	delegatedFailureRecoveryBatchSize = 100
+	// untrackedTaskGraceSeconds is how long an in-flight task may go without a
+	// status poll from its daemon while that daemon's runtime keeps
+	// heartbeating. A live daemon polls every 5s; the margin covers the
+	// terminal-callback retry window, after which the report is either
+	// delivered or queued for replay (MS-2563).
+	untrackedTaskGraceSeconds = 1800.0
+	// untrackedTaskConfirmWindow is how long a candidate must stay unchanged
+	// before it is failed. A daemon that reconnects after an outage polls within
+	// seconds, so its task leaves the candidate set before this elapses.
+	untrackedTaskConfirmWindow = 2 * time.Minute
+	// untrackedTaskBatchSize bounds candidates examined per tick.
+	untrackedTaskBatchSize = 100
 )
 
 type runtimeGCTxStarter interface {
@@ -161,6 +173,7 @@ func runPeriodicSweep(ctx context.Context, interval time.Duration, sweep func())
 // When liveness is unavailable or errors, we fall back to trusting the DB
 // stale window — that is the original behavior.
 func runRuntimeSweeper(ctx context.Context, queries *db.Queries, liveness handler.LivenessStore, taskSvc *service.TaskService, bus *events.Bus, reconnectGrace time.Duration) {
+	untracked := &untrackedTaskSweeper{now: time.Now}
 	runPeriodicSweep(ctx, sweepInterval, func() {
 		// These stages retain their existing cadence and ordering. Runtime GC and
 		// delegated-failure recovery run in independent lower-frequency loops.
@@ -168,9 +181,70 @@ func runRuntimeSweeper(ctx context.Context, queries *db.Queries, liveness handle
 		sweepOfflineRuntimeTasks(ctx, queries, taskSvc, reconnectGrace)
 		sweepExpiredRuntimeReconnectRetries(ctx, queries, taskSvc, reconnectGrace)
 		sweepStaleTasks(ctx, queries, taskSvc, bus, reconnectGrace)
+		untracked.sweep(ctx, queries, taskSvc)
 		sweepExpiredQueuedTasks(ctx, queries, taskSvc, reconnectGrace)
 		sweepDeferredChatFinalizations(ctx, queries, taskSvc)
 	})
+}
+
+// untrackedTaskSweeper fails in-flight tasks whose daemon is alive but no
+// longer tracks them. FailStaleTasks never fires for those: it treats any
+// heartbeating runtime as proof that its running tasks are alive, so a run
+// whose terminal report was lost stayed running for 21 hours (MS-2563).
+//
+// A candidate is failed only after it was seen unchanged for
+// untrackedTaskConfirmWindow. The first heartbeat after an outage can arrive
+// before the first status poll; waiting lets that poll move daemon_seen_at.
+type untrackedTaskSweeper struct {
+	now      func() time.Time
+	suspects map[[16]byte]untrackedTaskSuspect
+}
+
+type untrackedTaskSuspect struct {
+	lastSeenAt pgtype.Timestamptz
+	since      time.Time
+}
+
+func (u *untrackedTaskSweeper) sweep(ctx context.Context, queries *db.Queries, taskSvc *service.TaskService) {
+	candidates, err := queries.ListUntrackedInFlightTasks(ctx, db.ListUntrackedInFlightTasksParams{
+		UntrackedGraceSecs: untrackedTaskGraceSeconds,
+		RuntimeStaleSecs:   staleThresholdSeconds,
+		MaxPerTick:         untrackedTaskBatchSize,
+	})
+	if err != nil {
+		slog.Warn("task sweeper: failed to list untracked in-flight tasks", "error", err)
+		return
+	}
+	now := u.now()
+	next := make(map[[16]byte]untrackedTaskSuspect, len(candidates))
+	var failed []db.AgentTaskQueue
+	for _, candidate := range candidates {
+		prev, seen := u.suspects[candidate.ID.Bytes]
+		if !seen || !prev.lastSeenAt.Time.Equal(candidate.LastSeenAt.Time) {
+			next[candidate.ID.Bytes] = untrackedTaskSuspect{lastSeenAt: candidate.LastSeenAt, since: now}
+			continue
+		}
+		if now.Sub(prev.since) < untrackedTaskConfirmWindow {
+			next[candidate.ID.Bytes] = prev
+			continue
+		}
+		rows, err := taskSvc.FailUntrackedInFlightTask(ctx, db.FailUntrackedInFlightTaskParams{
+			ID:         candidate.ID,
+			LastSeenAt: candidate.LastSeenAt,
+		})
+		if err != nil {
+			slog.Warn("task sweeper: failed to fail untracked task", "task_id", util.UUIDToString(candidate.ID), "error", err)
+			next[candidate.ID.Bytes] = prev
+			continue
+		}
+		failed = append(failed, rows...)
+	}
+	u.suspects = next
+	if len(failed) == 0 {
+		return
+	}
+	slog.Info("task sweeper: failed tasks their daemon stopped tracking", "count", len(failed))
+	taskSvc.HandleFailedTasks(ctx, failed)
 }
 
 func runDelegatedFailureRecoverySweeper(ctx context.Context, taskSvc *service.TaskService) {
