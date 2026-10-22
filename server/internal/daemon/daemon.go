@@ -610,7 +610,8 @@ type Daemon struct {
 	// /health dimensions and must never replace activeTasks in safety barriers.
 	runningTasks      atomic.Int64
 	resourceWaitTasks atomic.Int64
-	ready             atomic.Bool // false until preflight completes; gates /health status (starting -> running)
+	taskSlots         atomic.Pointer[chan int] // poll loop's execution-slot semaphore, read by /health; nil until it starts
+	ready             atomic.Bool              // false until preflight completes; gates /health status (starting -> running)
 	// reloadPendingReason explains why a confirmed multica version change hasn't
 	// restarted the daemon yet (a task was running at the barrier check). Set
 	// and cleared by trySelfReload, read by /health. Diagnostic only.
@@ -5347,6 +5348,7 @@ func (d *Daemon) restartTargetBinary() (string, error) {
 // server-side batch claim is index-backed + short.
 func (d *Daemon) pollLoop(ctx context.Context, taskWakeups <-chan taskWakeup) error {
 	sem := newTaskSlotSemaphore(d.cfg.MaxConcurrentTasks)
+	d.taskSlots.Store(&sem)
 	var taskWG sync.WaitGroup // tracks in-flight handleTask goroutines
 
 	runtimeSetCh, unsub := d.runtimeSet.Subscribe()
@@ -5495,16 +5497,17 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 			go func(t Task, slot int) {
 				defer taskWG.Done()
 				defer d.activeTasks.Add(-1)
+				lease := newTaskSlotLease(sem, wakeup, slot)
 				defer func() {
 					// Release local capacity before waking the poller. The task's
 					// terminal callback and local cleanup have both finished at this
 					// point, so a successor that was previously blocked by agent
 					// capacity or per-(issue, agent) serialization can be claimed
 					// immediately instead of waiting for PollInterval.
-					sem <- slot
+					lease.release()
 					signalPollerWakeup(wakeup)
 				}()
-				d.handleTask(parentCtx, t, slot)
+				d.handleTask(withTaskSlotLease(parentCtx, lease), t, slot)
 			}(t, slot)
 			dispatched++
 		}
@@ -5794,6 +5797,8 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 	if localRelease != nil {
 		defer localRelease()
 	}
+	// A wait on the directory may have traded the dispatch slot for another.
+	slot = taskSlotLeaseFrom(ctx).currentSlot(slot)
 
 	// Hold a process-wide active-root guard for the rest of this task so
 	// the GC loop never sees a window where the env root has neither the
@@ -6146,6 +6151,7 @@ func (d *Daemon) acquireLocalDirectoryLockIfNeeded(ctx context.Context, task Tas
 	if pollInterval == 0 {
 		pollInterval = 5 * time.Second
 	}
+	slotLease := taskSlotLeaseFrom(ctx)
 	var (
 		watcherOnce      sync.Once
 		prepareLeaseOnce sync.Once
@@ -6192,6 +6198,9 @@ func (d *Daemon) acquireLocalDirectoryLockIfNeeded(ctx context.Context, task Tas
 		// server status update below fails.
 		d.resourceWaitTasks.Add(1)
 		waitCounted = true
+		// A task queued behind the directory is not running, so it must not
+		// hold one of the MaxConcurrentTasks slots while it waits.
+		slotLease.park()
 		markWaiting(holder)
 		prepareLeaseOnce.Do(func() {
 			stopPrepareLease = d.startTaskPrepareLeaseExtender(waitCtx, task, taskLog)
@@ -6213,6 +6222,14 @@ func (d *Daemon) acquireLocalDirectoryLockIfNeeded(ctx context.Context, task Tas
 		})
 	}
 	release, err = d.localPathLocks.AcquireWithHolderUpdates(waitCtx, assignment.RealPath, task.ID, onWait, markWaiting)
+	if err == nil {
+		// Holding the directory, the task queues for an execution slot like
+		// any other claimed task; cancellation still aborts this wait.
+		if err = slotLease.resume(waitCtx); err != nil {
+			release()
+			release = nil
+		}
+	}
 	if err != nil {
 		// If the wait was cut short because the server finalized the task
 		// (terminal state) or deleted the row, the row is already in a
@@ -8223,9 +8240,13 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 					taskLog.Warn("local_directory: mark waiting status failed", "error", waitErr)
 				}
 			}
+			slotLease := taskSlotLeaseFrom(ctx)
 			release, lockErr := d.localPathLocks.AcquireWithHolderUpdates(waitCtx, localAssignment.RealPath, task.ID, func(holder string) {
 				d.resourceWaitTasks.Add(1)
 				waitCounted = true
+				// Same as the in-place wait: a queued task gives its
+				// execution slot back until the directory frees up.
+				slotLease.park()
 				if prepareTimer.Stop() {
 					preparePaused = true
 					prepareRemaining = time.Until(prepareDeadline)
@@ -8240,6 +8261,12 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 					}
 				}()
 			}, markWaiting)
+			if lockErr == nil {
+				if lockErr = slotLease.resume(waitCtx); lockErr != nil {
+					release()
+				}
+				slot = slotLease.currentSlot(slot)
+			}
 			if waitCounted {
 				d.resourceWaitTasks.Add(-1)
 			}

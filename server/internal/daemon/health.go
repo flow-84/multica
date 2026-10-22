@@ -56,6 +56,9 @@ type HealthResponse struct {
 	ActiveTaskCount       int64 `json:"active_task_count"`
 	RunningTaskCount      int64 `json:"running_task_count"`
 	ResourceWaitTaskCount int64 `json:"resource_wait_task_count"`
+	// TaskSlotsInUse is how many of the MaxConcurrentTasks execution slots are
+	// taken. Tasks parked on a local_directory hold none.
+	TaskSlotsInUse int64 `json:"task_slots_in_use"`
 	// Repo maintenance stays a liveness-safe background activity, so health
 	// remains HTTP 200/running. These additive counters explain degraded repo
 	// checkout capacity to operators without exposing local cache paths.
@@ -356,6 +359,7 @@ func (d *Daemon) healthHandler(startedAt time.Time) http.HandlerFunc {
 			ActiveTaskCount:       d.activeTasks.Load(),
 			RunningTaskCount:      d.runningTasks.Load(),
 			ResourceWaitTaskCount: d.resourceWaitTasks.Load(),
+			TaskSlotsInUse:        d.taskSlotsInUse(),
 			Agents:                agents,
 			SkippedAgents:         d.skippedAgentsSnapshot(),
 
