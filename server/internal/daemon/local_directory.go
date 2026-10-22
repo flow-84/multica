@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 )
 
 // localDirectoryResourceType is the project_resource discriminator the daemon
@@ -470,6 +471,10 @@ type LocalPathLocker struct {
 	locks map[string]*pathLockEntry
 }
 
+// pathLockHolderPollInterval is how often a parked Acquire re-reads the holder
+// so the wait hint follows the lock from one holder to the next.
+var pathLockHolderPollInterval = 5 * time.Second
+
 type pathLockEntry struct {
 	mu       sync.Mutex // serialises holders for this key
 	mu2      sync.Mutex // guards holderID under contention
@@ -512,6 +517,14 @@ func (l *LocalPathLocker) Holder(realPath string) string {
 // context-aware cancellation — a daemon shutdown won't wedge inside the
 // per-path wait queue.
 func (l *LocalPathLocker) Acquire(ctx context.Context, realPath, taskID string, onWait func(holder string)) (func(), error) {
+	return l.AcquireWithHolderUpdates(ctx, realPath, taskID, onWait, nil)
+}
+
+// AcquireWithHolderUpdates is Acquire that also calls onHolderChange while
+// parked whenever the lock passes to another task. Without it the wait hint
+// kept naming the first holder after the lock had moved on, which read as a
+// lock that was never released (MS-2563 / MS-2472).
+func (l *LocalPathLocker) AcquireWithHolderUpdates(ctx context.Context, realPath, taskID string, onWait, onHolderChange func(holder string)) (func(), error) {
 	if realPath == "" {
 		return nil, errors.New("local_directory: realpath required for lock")
 	}
@@ -538,10 +551,13 @@ func (l *LocalPathLocker) Acquire(ctx context.Context, realPath, taskID string, 
 	// Slow path: somebody else holds the lock. Fire onWait once with the
 	// current holder so the daemon can stamp the server-side wait state,
 	// then block until either we win the lock or ctx is cancelled.
-	if onWait != nil {
+	currentHolder := func() string {
 		entry.mu2.Lock()
-		holder := entry.holderID
-		entry.mu2.Unlock()
+		defer entry.mu2.Unlock()
+		return entry.holderID
+	}
+	holder := currentHolder()
+	if onWait != nil {
 		onWait(holder)
 	}
 
@@ -551,23 +567,39 @@ func (l *LocalPathLocker) Acquire(ctx context.Context, realPath, taskID string, 
 		close(acquired)
 	}()
 
-	select {
-	case <-acquired:
-		entry.mu2.Lock()
-		entry.holderID = taskID
-		entry.mu2.Unlock()
-		return l.releaser(realPath, entry), nil
-	case <-ctx.Done():
-		// We lost the wait — the goroutine above will still complete and
-		// take the lock. Spin off a clean-up goroutine that releases it
-		// the moment the acquire returns so a future caller isn't stuck
-		// behind a phantom holder. The bookkeeping is best-effort: no
-		// holder id is set, since this task never owned the lock.
-		go func() {
-			<-acquired
-			entry.mu.Unlock()
-		}()
-		return nil, ctx.Err()
+	var holderTick <-chan time.Time
+	if onHolderChange != nil {
+		ticker := time.NewTicker(pathLockHolderPollInterval)
+		defer ticker.Stop()
+		holderTick = ticker.C
+	}
+	for {
+		select {
+		case <-holderTick:
+			// Empty means the lock is between holders; the next tick or the
+			// acquire itself settles it.
+			if next := currentHolder(); next != "" && next != holder {
+				holder = next
+				onHolderChange(holder)
+			}
+			continue
+		case <-acquired:
+			entry.mu2.Lock()
+			entry.holderID = taskID
+			entry.mu2.Unlock()
+			return l.releaser(realPath, entry), nil
+		case <-ctx.Done():
+			// We lost the wait — the goroutine above will still complete and
+			// take the lock. Spin off a clean-up goroutine that releases it
+			// the moment the acquire returns so a future caller isn't stuck
+			// behind a phantom holder. The bookkeeping is best-effort: no
+			// holder id is set, since this task never owned the lock.
+			go func() {
+				<-acquired
+				entry.mu.Unlock()
+			}()
+			return nil, ctx.Err()
+		}
 	}
 }
 
