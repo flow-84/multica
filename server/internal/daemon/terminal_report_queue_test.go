@@ -271,6 +271,92 @@ func TestTerminalReportEnqueueFailureStillAttemptsHTTP(t *testing.T) {
 	}
 }
 
+// MS-2563: a run ended while the disk was full and the server was down. The
+// file write failed, the direct callback failed, and the report was dropped, so
+// the server row stayed running for 21 hours. The report must stay queued in
+// memory, reach the server once it is back, and become restart-safe once the
+// disk accepts the write again.
+func TestTerminalReportSurvivesFullDiskWhileServerOffline(t *testing.T) {
+	d := New(Config{
+		ServerBaseURL:  "https://api.example.test",
+		WorkspacesRoot: t.TempDir(),
+		DaemonID:       "daemon-full-disk",
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err := os.MkdirAll(filepath.Dir(d.terminalReports.dir), 0o700); err != nil {
+		t.Fatalf("create queue parent: %v", err)
+	}
+	if err := os.WriteFile(d.terminalReports.dir, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("create invalid queue path: %v", err)
+	}
+
+	var online atomic.Bool
+	var delivered []terminalTaskReport
+	d.terminalReportSend = func(_ context.Context, got terminalTaskReport, _ []time.Duration) error {
+		if !online.Load() {
+			return errors.New("dial tcp [::1]:8080: connect: connection refused")
+		}
+		delivered = append(delivered, got)
+		return nil
+	}
+	report := terminalTaskReport{
+		kind:          terminalTaskReportFail,
+		taskID:        "task-full-disk",
+		errorMessage:  "claude exited: ENOSPC",
+		failureReason: "agent_error.process_failure",
+	}
+	if err := d.reportTerminalTask(context.Background(), report); err == nil {
+		t.Fatal("terminal report unexpectedly succeeded while server was offline")
+	}
+	if stats, _ := d.terminalReports.stats(); stats.PendingCount != 1 {
+		t.Fatalf("pending count = %d, want the memory-queued report", stats.PendingCount)
+	}
+
+	online.Store(true)
+	// pending stays 1 while the queue directory is unusable: the list error
+	// keeps the replay timer alive, as for any unreadable queue.
+	if _, sent := d.replayPendingTerminalReports(context.Background()); sent != 1 {
+		t.Fatalf("replay delivered=%d, want 1", sent)
+	}
+	if len(delivered) != 1 || delivered[0] != report {
+		t.Fatalf("delivered = %+v, want %+v", delivered, report)
+	}
+	if items, _ := d.terminalReports.list(); len(items) != 0 {
+		t.Fatalf("queue after delivery = %+v, want empty", items)
+	}
+}
+
+func TestTerminalReportMemoryQueuePersistsOnceDiskRecovers(t *testing.T) {
+	d := New(Config{
+		ServerBaseURL:  "https://api.example.test",
+		WorkspacesRoot: t.TempDir(),
+		DaemonID:       "daemon-disk-recovers",
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err := os.MkdirAll(filepath.Dir(d.terminalReports.dir), 0o700); err != nil {
+		t.Fatalf("create queue parent: %v", err)
+	}
+	if err := os.WriteFile(d.terminalReports.dir, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("create invalid queue path: %v", err)
+	}
+	report := terminalTaskReport{kind: terminalTaskReportComplete, taskID: "task-disk-recovers", output: "done"}
+	if err := d.terminalReports.enqueue(report); !errors.Is(err, errTerminalReportInMemory) {
+		t.Fatalf("enqueue error = %v, want memory fallback", err)
+	}
+
+	if err := os.Remove(d.terminalReports.dir); err != nil {
+		t.Fatalf("free queue path: %v", err)
+	}
+	items, err := d.terminalReports.list()
+	if err != nil || len(items) != 1 || items[0].report != report {
+		t.Fatalf("list after recovery = %+v, %v; want the original report", items, err)
+	}
+	if len(d.terminalReports.memory) != 0 {
+		t.Fatalf("memory queue = %d entries, want report moved to disk", len(d.terminalReports.memory))
+	}
+	if _, err := os.Stat(filepath.Join(d.terminalReports.dir, items[0].fileName)); err != nil {
+		t.Fatalf("persisted report file: %v", err)
+	}
+}
+
 func TestTerminalReportPermanentRejectionQuarantinesOriginalAndStopsReplay(t *testing.T) {
 	d := New(Config{
 		ServerBaseURL:  "https://api.example.test",

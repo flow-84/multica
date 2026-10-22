@@ -6338,19 +6338,23 @@ func (d *Daemon) reportTerminalTask(parentCtx context.Context, report terminalTa
 	}
 	defer release()
 
-	persisted := false
+	queued := false
 	if d.terminalReports != nil {
 		if err := d.terminalReports.enqueue(report); err != nil {
 			// Durability is an availability improvement, not a prerequisite for
 			// the online callback. A read-only/full disk must not turn a request
-			// that the server could accept right now into a stuck task.
+			// that the server could accept right now into a stuck task, and a
+			// report the disk refused stays queued in memory so a server that is
+			// also unreachable right now still gets it on replay (MS-2563).
+			queued = errors.Is(err, errTerminalReportInMemory)
 			d.logger.Error("persist terminal task report; continuing with direct delivery",
 				"task", report.taskID,
 				"kind", report.kind,
+				"queued_in_memory", queued,
 				"error", err,
 			)
 		} else {
-			persisted = true
+			queued = true
 		}
 	}
 
@@ -6359,16 +6363,16 @@ func (d *Daemon) reportTerminalTask(parentCtx context.Context, report terminalTa
 	err := d.sendTerminalTaskReport(ctx, report, defaultTerminalRetrySchedule)
 	if err != nil {
 		quarantined := false
-		if persisted {
+		if queued {
 			item := pendingTerminalTaskReport{fileName: terminalReportFileName(report.taskID), report: report}
 			quarantined = d.handleTerminalReportDeliveryError(ctx, item, err)
 		}
-		if persisted && !quarantined {
+		if queued && !quarantined {
 			d.signalTerminalReportReplay()
 		}
 		return err
 	}
-	if !persisted {
+	if !queued {
 		return nil
 	}
 	item := pendingTerminalTaskReport{fileName: terminalReportFileName(report.taskID), report: report}
