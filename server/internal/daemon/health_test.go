@@ -36,6 +36,10 @@ func TestHealthHandlerReportsCLIVersionAndTaskCounts(t *testing.T) {
 	d.activeTasks.Store(2)
 	d.runningTasks.Store(1)
 	d.resourceWaitTasks.Store(1)
+	// Three slots, one taken: the parked task holds none.
+	sem := newTaskSlotSemaphore(3)
+	<-sem
+	d.taskSlots.Store(&sem)
 	d.ready.Store(true) // preflight done -> status should be "running"
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -67,6 +71,9 @@ func TestHealthHandlerReportsCLIVersionAndTaskCounts(t *testing.T) {
 	}
 	if got, want := raw["resource_wait_task_count"], float64(1); got != want {
 		t.Errorf("resource_wait_task_count key: got %v, want %v", got, want)
+	}
+	if got, want := raw["task_slots_in_use"], float64(1); got != want {
+		t.Errorf("task_slots_in_use key: got %v, want %v", got, want)
 	}
 	if got, want := raw["status"], "running"; got != want {
 		t.Errorf("status key: got %v, want %q", got, want)
