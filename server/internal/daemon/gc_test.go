@@ -2698,3 +2698,28 @@ func TestShouldCleanTaskDir_LocalDirectoryFalsePreservesNormalClean(t *testing.T
 		t.Fatalf("expected gcActionClean for normal task, got %d", got)
 	}
 }
+
+// MS-2470: GC must not delete a task env whose git checkout still holds work
+// that exists nowhere else, unless the parent issue is closed.
+func TestShouldCleanTaskDir_OrphanWithUnsavedGitWorkIsKept(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	d := newGCTestDaemon(t, http.NewServeMux())
+	d.cfg.GCOrphanTTL = 0
+	taskDir := createTaskDir(t, d.cfg.WorkspacesRoot, "ws1", "task-unsaved", nil)
+	checkout := filepath.Join(taskDir, "workdir", "blog")
+	for _, args := range [][]string{
+		{"init", "-q", checkout},
+		{"-C", checkout, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "local only"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+
+	if action := d.shouldCleanTaskDir(context.Background(), taskDir); action != gcActionSkip {
+		t.Fatalf("action = %d, want skip for an env holding an unpushed commit", action)
+	}
+}

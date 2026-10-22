@@ -584,6 +584,33 @@ func (w *LocalWorktree) Finalize(logger *slog.Logger) (LocalWorktreeOutcome, err
 			w.Branch, quotedPaths(unmerged), w.Path, w.GitRoot)
 	}
 
+	// A checkout nested inside the worktree (a repo `multica repo checkout`
+	// placed in the task's cwd) is deleted with it, and the branch can carry at
+	// most a gitlink to it. If it holds work that exists nowhere else, keep the
+	// whole worktree: MS-2470 lost a finished, uncommitted plugin this way.
+	nested, nestedErr := nestedCheckouts(w.Path)
+	var unsaved []string
+	if nestedErr != nil {
+		unsaved = []string{"(nested checkouts could not be listed: " + nestedErr.Error() + ")"}
+	}
+	for _, rel := range nested {
+		if CheckoutHoldsUnsavedWork(filepath.Join(w.Path, rel)) {
+			unsaved = append(unsaved, rel)
+		}
+	}
+	if len(unsaved) > 0 {
+		outcome.Branch = ""
+		outcome.PreservedPath = w.Path
+		if logger != nil {
+			logger.Error("execenv: nested checkout holds unsaved work; nothing committed, worktree kept",
+				"path", w.Path, "branch", w.Branch, "checkouts", unsaved)
+		}
+		return outcome, fmt.Errorf(
+			"refusing to remove the task worktree: nested checkout %s holds uncommitted or unpushed work that the branch %s cannot carry; "+
+				"the worktree is preserved at %s (listed by `git worktree list` in %s) — commit and push that work, then re-run the task",
+			quotedPaths(unsaved), w.Branch, w.Path, w.GitRoot)
+	}
+
 	// Treat "can't tell" like "dirty": committing costs an empty commit at
 	// worst, while assuming clean risks deleting the agent's edits.
 	dirty, statusErr := worktreeIsDirty(w.Path)
@@ -595,7 +622,7 @@ func (w *LocalWorktree) Finalize(logger *slog.Logger) (LocalWorktreeOutcome, err
 		dirty = true
 	}
 	if dirty {
-		committed, err := w.commitAll(logger)
+		committed, err := w.commitAll(nested, logger)
 		if err != nil {
 			outcome.PreservedPath = w.Path
 			if logger != nil {
@@ -782,17 +809,26 @@ func commitBaseline(worktreePath string, continued, dirty bool) (string, error) 
 // commitAll stages and commits everything the agent left behind. Returns
 // whether a commit was actually created; an error means the changes are still
 // only on disk and the caller must not delete the worktree.
-func (w *LocalWorktree) commitAll(logger *slog.Logger) (bool, error) {
+func (w *LocalWorktree) commitAll(nested []string, logger *slog.Logger) (bool, error) {
 	// Never --allow-empty here: an empty commit would make a read-only turn look
-	// like it produced work and leave its branch behind.
-	return commitEverything(w.Path, "chore(agent): uncommitted changes from task", false)
+	// like it produced work and leave its branch behind. Nested checkouts stay
+	// out: `git add -A` would record them as a gitlink the branch cannot resolve.
+	return commitEverything(w.Path, "chore(agent): uncommitted changes from task", false, nested...)
 }
 
 // commitEverything returns (false, nil) for the benign "there was nothing to
 // commit" case and (false, err) for a real failure — the distinction callers
-// need to decide whether the tree is safe to discard.
-func commitEverything(worktreePath, message string, allowEmpty bool) (bool, error) {
-	if out, err := runGit(worktreePath, "add", "-A"); err != nil {
+// need to decide whether the tree is safe to discard. exclude names paths,
+// relative to worktreePath, that must not be staged.
+func commitEverything(worktreePath, message string, allowEmpty bool, exclude ...string) (bool, error) {
+	addArgs := []string{"add", "-A"}
+	if len(exclude) > 0 {
+		addArgs = append(addArgs, "--", ".")
+		for _, rel := range exclude {
+			addArgs = append(addArgs, ":(exclude,literal)"+rel)
+		}
+	}
+	if out, err := runGit(worktreePath, addArgs...); err != nil {
 		return false, fmt.Errorf("git add: %s: %w", strings.TrimSpace(out), err)
 	}
 	// --no-verify: the user's commit hooks are written for the user's own
