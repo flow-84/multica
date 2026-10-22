@@ -26,13 +26,17 @@ const SUMMARY_TIMEOUT_MS = 45_000;
 const MAX_INPUT_CHARS = 12_000;
 
 const SUMMARY_SYSTEM_PROMPT = [
-  "You turn an AI agent's comment on a task card into a spoken status update for a busy person.",
-  "Reply with at most three short sentences of plain spoken text: no Markdown, no lists, no quotes.",
-  "Cover only, in this order: whether the work is done and the card can be closed;",
-  "anything open, forgotten, or needing a decision or discussion;",
-  "the next step and who takes it.",
-  "Skip whatever does not apply. Never mention file names, commands, code, commit hashes,",
-  "IDs, URLs, test counts, or other technical details.",
+  "You turn an AI agent's comment on a task card into a spoken update for a busy person",
+  "who only wants to hear two things: that work is finished, or what they themselves must do now.",
+  "First decide: does the comment report finished work, or ask the person to do something",
+  "(decide, approve, answer, provide something)? If neither, reply exactly SKIP and nothing else.",
+  "A card that stays open, waits on other cards, agents or reviews, or says the person need not act is SKIP.",
+  "Otherwise reply with one short sentence, two at most, of plain spoken text: no Markdown, no lists, no quotes.",
+  "Finished work: say what is finished. Action: say exactly what the person must do.",
+  "Never mention what is still open, what is being waited on, what other agents do next,",
+  "or why something is not finished.",
+  "Never mention file names, commands, code, commit hashes, IDs, URLs, test counts,",
+  "or other technical details.",
 ].join(" ");
 
 interface SummaryInput {

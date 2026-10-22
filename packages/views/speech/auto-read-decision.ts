@@ -3,7 +3,7 @@ import { parseMentions } from "@multica/core/issues/comment-trigger-outcomes";
 import type { Issue } from "@multica/core/types";
 
 /** Why an agent answer is read aloud without being asked. */
-export type AutoReadReason = "mentioned" | "done" | "blocked" | "stalled" | "failed";
+export type AutoReadReason = "mentioned" | "done" | "blocked";
 
 /** Whether the comment mentions the current user, directly or through @all. */
 export function mentionsMe(markdown: string, myUserId: string | null): boolean {
@@ -30,9 +30,9 @@ export interface RunEnd {
 }
 
 /**
- * After an agent run ends, read aloud only when the work stops: the issue is
- * done or blocked, the run failed, or nothing else picks it up. Handoffs to
- * another agent or person stay silent.
+ * After an agent run ends, read aloud only when the issue is done or blocked
+ * (waiting on a person). A run that stops with the issue still open, fails,
+ * or hands off to another agent or person stays silent.
  */
 export function decideRunEnd(run: RunEnd): AutoReadReason | null {
   if (run.hasActiveTask) return null;
@@ -41,5 +41,5 @@ export function decideRunEnd(run: RunEnd): AutoReadReason | null {
   if (category === "done") return "done";
   if (category === "closed") return null;
   if (run.issue.status === "blocked") return "blocked";
-  return run.failed ? "failed" : "stalled";
+  return null;
 }

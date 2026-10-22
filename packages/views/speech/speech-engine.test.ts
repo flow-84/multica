@@ -46,6 +46,20 @@ describe("speech engine summaries", () => {
     await vi.waitFor(() => expect(spoken).toEqual(["Fertig und live."]));
   });
 
+  it("speaks only the prefix of an auto-read answer when no summary comes back", async () => {
+    const { spoken } = fakeBackend(null);
+    speak({ commentId: "c5", markdown: "Long report", issue, prefix: "MUL-1 is done." });
+    await vi.waitFor(() => expect(spoken).toEqual(["MUL-1 is done."]));
+  });
+
+  it("stays silent on an auto-read answer the summarizer skips", async () => {
+    const { backend, spoken } = fakeBackend("SKIP");
+    speak({ commentId: "c6", markdown: "Still waiting on MUL-2.", issue, prefix: "MUL-1 is blocked." });
+    await vi.waitFor(() => expect(backend.summarize).toHaveBeenCalled());
+    await vi.waitFor(() => expect(useSpeechStore.getState().speaking).toBeNull());
+    expect(spoken).toEqual([]);
+  });
+
   it("reads the full answer when the summary preference is off", async () => {
     const { backend, spoken } = fakeBackend("short");
     useSpeechStore.setState({ summarize: false });

@@ -124,11 +124,20 @@ const summaries = new Map<string, string>();
 // `speak`; comparing generations keeps that from starting the next item.
 let generation = 0;
 
-async function spokenText(b: SpeechBackend, req: SpeechRequest): Promise<string> {
+// A summarizer answers this when the comment holds nothing finished and
+// nothing the listener has to do.
+const SKIP = "SKIP";
+
+/**
+ * The text to speak, or null for silence. Auto-read requests carry a prefix:
+ * for them a SKIP stays silent and a failed summary speaks only the prefix,
+ * never the full comment. A manual read without prefix falls back to it.
+ */
+async function spokenText(b: SpeechBackend, req: SpeechRequest): Promise<string | null> {
   const full = markdownToSpeech(req.markdown);
   if (!b.summarize || !req.issue || !useSpeechStore.getState().summarize) return full;
   const cached = summaries.get(req.commentId);
-  if (cached) return cached;
+  if (cached) return cached === SKIP ? (req.prefix ? null : full) : cached;
   const summary = await b
     .summarize({
       identifier: req.issue.identifier,
@@ -138,9 +147,11 @@ async function spokenText(b: SpeechBackend, req: SpeechRequest): Promise<string>
       locale: typeof navigator !== "undefined" ? navigator.language || "en-US" : "en-US",
     })
     .catch(() => null);
-  if (!summary?.trim()) return full;
-  summaries.set(req.commentId, summary.trim());
-  return summary.trim();
+  const text = summary?.trim().replace(/[.!]$/, "") === SKIP ? SKIP : summary?.trim();
+  if (!text) return req.prefix ? "" : full;
+  summaries.set(req.commentId, text);
+  if (text === SKIP) return req.prefix ? null : full;
+  return text;
 }
 
 function playNext(): void {
@@ -161,9 +172,9 @@ function playNext(): void {
   setSpeaking({ ...item, preparing: true });
   void spokenText(b, req)
     .then((text) => {
-      if (current !== generation) return;
+      if (current !== generation || text === null) return;
       setSpeaking({ ...item, preparing: false });
-      return b.speak(req.prefix ? `${req.prefix} ${text}` : text);
+      return b.speak([req.prefix, text].filter(Boolean).join(" "));
     })
     .catch(() => undefined)
     .then(() => {

@@ -58,9 +58,10 @@ describe("decideRunEnd", () => {
     expect(decideRunEnd(run({ issue: { status: "blocked" } }))).toBe("blocked");
   });
 
-  it("reads a run that stops without a follow-up", () => {
-    expect(decideRunEnd(run())).toBe("stalled");
-    expect(decideRunEnd(run({ failed: true, lastComment: null }))).toBe("failed");
+  it("stays silent when a run stops with the issue still open", () => {
+    expect(decideRunEnd(run())).toBeNull();
+    expect(decideRunEnd(run({ issue: { status: "in_review" } }))).toBeNull();
+    expect(decideRunEnd(run({ failed: true, lastComment: null }))).toBeNull();
   });
 
   it("stays silent while another run continues", () => {

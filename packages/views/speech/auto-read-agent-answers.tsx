@@ -32,8 +32,6 @@ const PREFIX_KEYS = {
   mentioned: "mentioned_on",
   done: "done_on",
   blocked: "blocked_on",
-  stalled: "stalled_on",
-  failed: "failed_on",
 } as const satisfies Record<AutoReadReason, string>;
 
 function myUserId(): string | null {
@@ -42,9 +40,9 @@ function myUserId(): string | null {
 
 /**
  * While the read-aloud preference is on, speaks an agent answer only when it
- * mentions the user or when a run ends and the work stops there: the issue is
- * done or blocked, the run failed, or no other run picks it up. Handoffs to
- * other agents or people stay silent. Queued, so answers never interrupt each
+ * mentions the user or when a run ends with the issue done or blocked.
+ * Everything else, including handoffs and runs that stop with the issue still
+ * open, stays silent. Queued, so answers never interrupt each
  * other.
  */
 export function AutoReadAgentAnswers() {
@@ -112,9 +110,6 @@ export function AutoReadAgentAnswers() {
             myUserId: myUserId(),
             failed,
           });
-          // A stop right after an answer that was already read for mentioning
-          // the user adds nothing.
-          if (reason === "stalled" && comment && spokenCommentIds.has(comment.id)) return;
           if (reason) read(reason, issueId, comment);
         });
       }, RUN_END_SETTLE_MS);
