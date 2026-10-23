@@ -1,6 +1,6 @@
 # Multica-Connector für Claude
 
-Mit diesem Connector steuert fl0w den Multica-Workspace `m2s` aus claude.ai im Browser und aus der Claude-App auf Android, auch im Sprachmodus. Es ist ein Remote-MCP-Server (Streamable HTTP, zustandslos) mit OAuth 2.1, PKCE und Dynamic Client Registration. Er läuft als LaunchAgent auf dem MacBook und ist über Tailscale Funnel erreichbar. (MS-2400)
+Mit diesem Connector steuert fl0w den Multica-Workspace `m2s` aus claude.ai im Browser und aus der Claude-App auf Android, auch im Sprachmodus. Es ist ein Remote-MCP-Server (Streamable HTTP, zustandslos) mit OAuth 2.1, PKCE und Dynamic Client Registration. Er läuft als LaunchAgent auf dem MacBook und ist über einen Cloudflare-Tunnel erreichbar. (MS-2400)
 
 ## Connector-URL
 
@@ -51,16 +51,11 @@ Alle Antworten sind kurze deutsche Sätze ohne IDs und ohne Markdown, damit sie 
 
 ## Erreichbarkeit
 
-claude.ai ruft Connectoren aus dem Internet auf. Ein Cloud-Server kommt nicht in Frage, deshalb läuft Tailscale Funnel auf dem MacBook. Funnel erlaubt nur die Ports 443, 8443 und 10000, und alle drei sind belegt. Auf Port 8443 kommt claude.ai nicht an: Beim Hinzufügen meldete es „Diese Adresse konnte nicht erreicht werden“, und am Server kam keine Anfrage an. Die Connector-Pfade hängen deshalb auf Port 443 neben dem Multica-Web (`127.0.0.1:3000`), das keinen davon benutzt:
+claude.ai ruft Connectoren aus dem Internet auf. Ein Cloud-Server kommt nicht in Frage, deshalb läuft ein Cloudflare-Tunnel (`multica-connector`, Zone `aetherapulse.io`) auf dem MacBook. Er leitet nur `https://mcp.aetherapulse.io` auf `127.0.0.1:8791` und verrät keine anderen Dienste des Macs. In claude.ai lautet die Connector-Adresse `https://mcp.aetherapulse.io/mcp`.
 
-| Pfad | Ziel |
-| --- | --- |
-| `/mcp` | `127.0.0.1:8791/mcp` |
-| `/mcp-oauth` | `127.0.0.1:8791/mcp-oauth` |
-| `/.well-known/oauth-protected-resource` | `127.0.0.1:8791/.well-known/oauth-protected-resource` |
-| `/.well-known/oauth-authorization-server` | `127.0.0.1:8791/.well-known/oauth-authorization-server` |
+Bis 24.10.2026 lief der Connector über Tailscale Funnel. Am 22.10.2026 abends hat Tailscale den öffentlichen DNS-Eintrag von `macbook-air-von-fl0w.taildc41c0.ts.net` entfernt, obwohl die Konsole Funnel weiter als aktiv zeigte. Neu anmelden, Funnel umschalten und `tailscale funnel reset` mit Wiederherstellung holten ihn nicht zurück, und claude.ai meldete „Multica konnte nicht erreicht werden“.
 
-Tailscale schneidet den Mount-Pfad vor dem Weiterleiten ab, deshalb wiederholt jedes Ziel ihn. Die Pfade setzt `tailscale funnel --set-path`, nicht `tailscale serve`: `serve` auf einem Funnel-Port schaltet den öffentlichen Funnel für den ganzen Port ab.
+Ein Wächter (`com.fl0w.multica-claude-connector-watchdog`, alle 5 Minuten) ruft `/mcp` über die öffentliche Adresse auf und meldet jeden Wechsel zwischen erreichbar und nicht erreichbar per Telegram an fl0w (Secret `multiversemedia-alert-telegram`).
 
 ## Betrieb
 
@@ -68,11 +63,12 @@ Tailscale schneidet den Mount-Pfad vor dem Weiterleiten ab, deshalb wiederholt j
 bash tools/claude-connector/launchd/install.sh   # installieren oder aktualisieren, idempotent
 ```
 
-Das Skript kopiert den Code nach `~/.local/share/multica-claude-connector/app` (unabhängig vom Branch, der in `~/multica` ausgecheckt ist), schreibt den LaunchAgent `com.fl0w.multica-claude-connector` mit `KeepAlive`, startet ihn neu, setzt die Funnel-Pfade und prüft lokal `/healthz` und öffentlich `401` auf `/mcp`.
+Das Skript kopiert den Code nach `~/.local/share/multica-claude-connector/app` (unabhängig vom Branch, der in `~/multica` ausgecheckt ist), schreibt den LaunchAgent `com.fl0w.multica-claude-connector` mit `KeepAlive`, startet ihn neu, legt den Tunnel samt DNS-Eintrag an (`com.cloudflared.multica-connector`), installiert den Wächter, entfernt die alten Funnel-Pfade und prüft lokal `/healthz` und öffentlich `401` auf `/mcp`.
 
 - Log: `~/.local/state/multica-claude-connector/connector.log`, eine Zeile je Anfrage mit JSON-RPC-Methode, ohne Query-Strings.
 - Neustart: `launchctl kickstart -k gui/$UID/com.fl0w.multica-claude-connector`
-- Abschalten: `launchctl bootout gui/$UID/com.fl0w.multica-claude-connector`, danach je Pfad `tailscale funnel --https=443 --set-path=<pfad> off`
+- Tunnel-Log: `~/.local/state/multica-claude-connector/tunnel.log`, Wächter-Log: `watchdog.log` daneben.
+- Abschalten: `launchctl bootout` für `com.fl0w.multica-claude-connector`, `com.cloudflared.multica-connector` und `com.fl0w.multica-claude-connector-watchdog`.
 
 claude.ai fragt zuerst `server/discover` mit einer neueren Protokollversion im Header `mcp-protocol-version` ab. SDK 1.32.1 (die neueste Version am 19.10.2026) kennt diese Version nicht und antwortet `400 Unsupported protocol version`. Danach verhandelt claude.ai über `initialize` eine unterstützte Version. Diese 400er im Log sind deshalb erwartet.
 

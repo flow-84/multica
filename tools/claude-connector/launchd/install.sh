@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Installs or updates the connector on this MacBook: copies the code to a
 # stable location (independent of which branch ~/multica has checked out),
-# writes the LaunchAgent, restarts it, mounts the public paths on Tailscale
-# Funnel and checks health. Idempotent; rerun after every change.
+# writes the LaunchAgent, restarts it, publishes it through a Cloudflare
+# tunnel, installs the reachability watchdog and checks health. Idempotent;
+# rerun after every change.
 set -euo pipefail
 
 LABEL=com.fl0w.multica-claude-connector
@@ -12,12 +13,20 @@ STATE="$HOME/.local/state/multica-claude-connector"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 NODE="$(command -v node)"
 PORT=8791
-# Funnel only allows 443, 8443 and 10000, all taken. claude.ai only reaches
-# connectors on 443, which serves the Multica web app (127.0.0.1:3000); the
-# connector paths are mounted beside it (the web app uses none of them).
-FUNNEL_PORT=443
-PUBLIC_HOST="$(tailscale status --json | /usr/bin/python3 -I -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))')"
+# Public through a Cloudflare tunnel, not Tailscale Funnel: on 22.10.2026
+# Tailscale silently dropped the public DNS record of the Funnel host while the
+# admin console still showed Funnel as active, and claude.ai lost the connector.
+PUBLIC_HOST="${CONNECTOR_PUBLIC_HOST:-mcp.aetherapulse.io}"
 PUBLIC_URL="https://$PUBLIC_HOST"
+TUNNEL=multica-connector
+CF_DIR="$HOME/.cloudflared"
+# Origin cert of the Cloudflare zone aetherapulse.io (account fl0w).
+export TUNNEL_ORIGIN_CERT="$CF_DIR/cert-aetherapulse.pem"
+CF_CONFIG="$CF_DIR/config-$TUNNEL.yml"
+CF_LABEL="com.cloudflared.$TUNNEL"
+CF_PLIST="$HOME/Library/LaunchAgents/$CF_LABEL.plist"
+WD_LABEL="$LABEL-watchdog"
+WD_PLIST="$HOME/Library/LaunchAgents/$WD_LABEL.plist"
 
 mkdir -p "$APP" "$STATE"
 rsync -a --delete "$SRC/src" "$SRC/package.json" "$SRC/package-lock.json" "$APP/"
@@ -67,21 +76,96 @@ cat >"$PLIST" <<PLIST
 PLIST
 
 # bootout returns before the job is gone; bootstrap fails with EIO until then.
-launchctl bootout "gui/$UID/$LABEL" 2>/dev/null || true
-for _ in $(seq 1 20); do
-  launchctl print "gui/$UID/$LABEL" >/dev/null 2>&1 || break
-  sleep 0.5
-done
-launchctl bootstrap "gui/$UID" "$PLIST"
+load() {
+  launchctl bootout "gui/$UID/$1" 2>/dev/null || true
+  for _ in $(seq 1 20); do
+    launchctl print "gui/$UID/$1" >/dev/null 2>&1 || break
+    sleep 0.5
+  done
+  launchctl bootstrap "gui/$UID" "$2"
+}
+load "$LABEL" "$PLIST"
 
-# Tailscale strips the mount point before proxying, so each target repeats it.
-# `tailscale funnel`, not `serve`: `serve` on a funneled port turns the public
-# Funnel off for the whole port, the Multica web app included.
+# Old Tailscale Funnel mounts; the Multica web app on 443 stays untouched.
 for p in /mcp /mcp-oauth /.well-known/oauth-protected-resource /.well-known/oauth-authorization-server; do
-  tailscale funnel --bg --https=$FUNNEL_PORT --set-path="$p" "http://127.0.0.1:$PORT$p" >/dev/null
+  tailscale funnel --https=443 --set-path="$p" off >/dev/null 2>&1 || true
 done
-tailscale serve status --json | /usr/bin/python3 -I -c "import json,sys; sys.exit(0 if json.load(sys.stdin)['AllowFunnel'].get('$PUBLIC_HOST:$FUNNEL_PORT') else 1)" \
-  || { echo "Funnel auf $FUNNEL_PORT ist aus" >&2; exit 1; }
+
+tunnel_id() {
+  cloudflared tunnel list --output json 2>/dev/null | /usr/bin/python3 -I -c \
+    'import json,sys; print(next((t["id"] for t in (json.load(sys.stdin) or []) if t["name"]==sys.argv[1]), ""))' "$TUNNEL"
+}
+id="$(tunnel_id)"
+if [ -z "$id" ]; then
+  cloudflared tunnel create "$TUNNEL" >/dev/null
+  id="$(tunnel_id)"
+fi
+cloudflared tunnel route dns --overwrite-dns "$id" "$PUBLIC_HOST"
+cat >"$CF_CONFIG" <<YML
+# Written by multica/tools/claude-connector/launchd/install.sh, do not edit.
+tunnel: $id
+credentials-file: $CF_DIR/$id.json
+ingress:
+  - hostname: $PUBLIC_HOST
+    service: http://127.0.0.1:$PORT
+  - service: http_status:404
+YML
+cat >"$CF_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>$CF_LABEL</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>$(command -v cloudflared)</string>
+		<string>tunnel</string>
+		<string>--config</string>
+		<string>$CF_CONFIG</string>
+		<string>run</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>30</integer>
+	<key>StandardOutPath</key>
+	<string>$STATE/tunnel.log</string>
+	<key>StandardErrorPath</key>
+	<string>$STATE/tunnel.log</string>
+</dict>
+</plist>
+PLIST
+load "$CF_LABEL" "$CF_PLIST"
+
+install -m 755 "$SRC/launchd/watchdog.sh" "$STATE/watchdog.sh"
+cat >"$WD_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>$WD_LABEL</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>$STATE/watchdog.sh</string>
+		<string>$PUBLIC_URL</string>
+	</array>
+	<key>StartInterval</key>
+	<integer>300</integer>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>$STATE/watchdog.log</string>
+	<key>StandardErrorPath</key>
+	<string>$STATE/watchdog.log</string>
+</dict>
+</plist>
+PLIST
+load "$WD_LABEL" "$WD_PLIST"
 
 for _ in $(seq 1 20); do
   curl -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1 && break
@@ -89,6 +173,10 @@ for _ in $(seq 1 20); do
 done
 curl -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null
 echo "lokal ok: http://127.0.0.1:$PORT"
+for _ in $(seq 1 30); do
+  [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$PUBLIC_URL/mcp")" = 401 ] && break
+  sleep 2
+done
 status="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$PUBLIC_URL/mcp")"
 [ "$status" = 401 ] || { echo "öffentlich: erwartet 401, bekam $status" >&2; exit 1; }
 echo "öffentlich ok: $PUBLIC_URL/mcp"
