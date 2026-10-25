@@ -237,9 +237,17 @@ async function listIssues(c: Ctx, a: z.infer<z.ZodObject<typeof listIssuesInput>
       // and the time filter only cuts the tail of this page.
       const r = await c.api.listIssues({ ...q, limit: LIST_PAGE })
       const issues = r.issues.filter(inRange)
-      count = offset + issues.length
-      atLeast = r.issues.length >= LIST_PAGE && issues.length === r.issues.length && r.total > count
       shown = issues.slice(0, size)
+      if (offset && !issues.length) {
+        // The page lies past the range, so some skipped issues are out of it too: count from the start.
+        const first = await c.api.listIssues({ ...q, offset: 0, limit: LIST_PAGE })
+        const inFirst = first.issues.filter(inRange)
+        count = inFirst.length
+        atLeast = first.issues.length >= LIST_PAGE && inFirst.length === first.issues.length && first.total > count
+      } else {
+        count = offset + issues.length
+        atLeast = r.issues.length >= LIST_PAGE && issues.length === r.issues.length && r.total > count
+      }
     }
   }
 
