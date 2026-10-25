@@ -165,7 +165,11 @@ async function loadIssue(api: MulticaApi, ref: string): Promise<Issue> {
   try {
     return await api.getIssue(r)
   } catch (err) {
-    if (err instanceof MulticaError && (err.status === 404 || err.status === 400)) throw new Say(`Das Issue ${ref} finde ich nicht.`)
+    // A 404 also comes back when Multica cannot reach its database ("workspace not found"):
+    // that is an outage, not a missing issue.
+    if (err instanceof MulticaError && (err.status === 404 || err.status === 400) && !/workspace/i.test(err.message)) {
+      throw new Say(`Das Issue ${ref} finde ich nicht.`)
+    }
     throw err
   }
 }

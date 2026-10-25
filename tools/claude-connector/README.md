@@ -87,7 +87,7 @@ claude.ai fragt zuerst `server/discover` mit einer neueren Protokollversion im H
 ```bash
 cd tools/claude-connector
 npm ci
-npm test          # 66 Tests: OAuth Ende zu Ende, alle Werkzeuge und Seitengrenzen gegen eine nachgebaute Multica-API
+npm test          # 67 Tests: OAuth Ende zu Ende, alle Werkzeuge und Seitengrenzen gegen eine nachgebaute Multica-API
 npm run typecheck
 ```
 

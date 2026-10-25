@@ -37,6 +37,8 @@ export interface FakeMultica {
   projects: { id: string; title: string; status: string; description?: string | null }[]
   /** When true every wakeup POST fails, as on a backend without conditions. */
   wakeupsFail: boolean
+  /** When true issue reads answer 404 "workspace not found", as while Multica's database is unreachable. */
+  dbDown: boolean
   /** When true every API call answers 401, as after an expired session. */
   expired: boolean
 }
@@ -72,6 +74,7 @@ export async function startFakeMultica(): Promise<FakeMultica> {
     writes: [],
     expired: false,
     wakeupsFail: false,
+    dbDown: false,
     projects: [
       { id: P_MULTICA, title: 'Multica', status: 'planned' },
       { id: P_CRM, title: 'CRM (m2s)', status: 'in_progress' },
@@ -202,6 +205,7 @@ export async function startFakeMultica(): Promise<FakeMultica> {
     }
     const m = /^\/api\/issues\/([^/]+)(\/comments|\/children|\/wakeups)?$/.exec(p)
     if (m) {
+      if (state.dbDown) return send(404, { error: 'workspace not found' })
       const ref = decodeURIComponent(m[1])
       const issue = state.issues.find((i) => i.id === ref || i.identifier === ref)
       if (!issue) return send(404, { error: 'issue not found' })
