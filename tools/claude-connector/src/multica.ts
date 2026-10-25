@@ -19,6 +19,8 @@ export interface Issue {
   assignee_type: 'member' | 'agent' | 'squad' | null
   assignee_id: string | null
   project_id: string | null
+  parent_issue_id?: string | null
+  stage?: number | null
   created_at: string
   updated_at: string
 }
@@ -27,6 +29,12 @@ export interface Project {
   id: string
   title: string
   status: string
+  description?: string | null
+}
+
+export interface Label {
+  id: string
+  name: string
 }
 
 export interface Agent {
@@ -146,8 +154,15 @@ export class MulticaApi {
   }
 
   /** Most recently changed first. The server caps a page at 100; `total` counts every match. */
-  async listIssues(q: { projectId?: string; statuses?: string[]; assigneeId?: string; limit: number }): Promise<{ issues: Issue[]; total: number }> {
+  async listIssues(q: {
+    projectId?: string
+    statuses?: string[]
+    assigneeId?: string
+    limit: number
+    offset?: number
+  }): Promise<{ issues: Issue[]; total: number }> {
     const p = new URLSearchParams({ workspace_id: this.workspaceId, limit: String(q.limit), sort: 'updated_at', direction: 'desc' })
+    if (q.offset) p.set('offset', String(q.offset))
     if (q.projectId) p.set('project_id', q.projectId)
     if (q.statuses?.length) p.set('statuses', q.statuses.join(','))
     if (q.assigneeId) p.set('assignee_id', q.assigneeId)
@@ -182,5 +197,43 @@ export class MulticaApi {
 
   addComment(issueId: string, content: string): Promise<Comment> {
     return this.req('POST', `/api/issues/${issueId}/comments`, { content })
+  }
+
+  /** Every sub-issue of a parent, unpaged. */
+  async children(issueId: string): Promise<Issue[]> {
+    return list<Issue>(await this.req('GET', `/api/issues/${issueId}/children`), 'issues')
+  }
+
+  /** Unknown ids are skipped by the server; `updated` counts the real changes. */
+  async batchUpdateIssues(issueIds: string[], updates: Record<string, unknown>): Promise<number> {
+    const r = await this.req<{ updated?: number }>('POST', '/api/issues/batch-update', { issue_ids: issueIds, updates })
+    return typeof r?.updated === 'number' ? r.updated : 0
+  }
+
+  async issueLabels(): Promise<Label[]> {
+    return list<Label>(await this.req('GET', `/api/labels?workspace_id=${this.workspaceId}&resource_type=issue`), 'labels')
+  }
+
+  /** Wake an agent on `issueId` once another issue reaches `state`. */
+  waitForIssue(issueId: string, agentId: string, otherIssueId: string, instruction: string): Promise<unknown> {
+    return this.req('POST', `/api/issues/${issueId}/wakeups`, {
+      agent_id: agentId,
+      kind: 'event',
+      mode: 'once',
+      instruction,
+      condition: { type: 'other_issue', issue_id: otherIssueId, state: 'done' },
+    })
+  }
+
+  getProject(id: string): Promise<Project> {
+    return this.req('GET', `/api/projects/${id}`)
+  }
+
+  createProject(body: Record<string, unknown>): Promise<Project> {
+    return this.req('POST', '/api/projects', body)
+  }
+
+  updateProject(id: string, body: Record<string, unknown>): Promise<Project> {
+    return this.req('PUT', `/api/projects/${id}`, body)
   }
 }

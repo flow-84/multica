@@ -165,12 +165,17 @@ describe('Token', () => {
     const tools = await client.listTools()
     assert.deepEqual(tools.tools.map((x) => x.name).sort(), [
       'add_comment',
+      'archive_issue',
+      'bulk_update_issues',
       'create_issue',
+      'create_project',
       'get_issue',
+      'get_project',
       'list_issues',
       'list_projects',
       'system_status',
       'update_issue',
+      'update_project',
     ])
     await client.close()
     const dump = JSON.stringify(h.db.prepare('SELECT * FROM tokens').all()) + JSON.stringify(h.db.prepare('SELECT * FROM codes').all())
