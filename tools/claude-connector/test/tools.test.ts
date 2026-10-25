@@ -73,6 +73,17 @@ describe('lesen', () => {
     assert.equal(r.text, 'Das Issue MS-999 finde ich nicht.')
   })
 
+  it('meldet einen Datenbankausfall nicht als fehlendes Issue', async () => {
+    h.fake.dbDown = true
+    try {
+      const r = await callTool(client, 'get_issue', { issue: 'MS-1' })
+      assert.equal(r.isError, true)
+      assert.equal(r.text, 'Multica antwortet gerade nicht richtig.')
+    } finally {
+      h.fake.dbDown = false
+    }
+  })
+
   it('nennt Stand von Daemon und Agenten', async () => {
     const r = await callTool(client, 'system_status')
     assert.equal(r.text, 'Der Daemon läuft, alle 2 Laufzeiten sind online. 1 von 2 Agenten arbeiten gerade: Claude. 1 Issue ist in Arbeit.')

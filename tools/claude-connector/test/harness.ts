@@ -34,6 +34,11 @@ export interface FakeMultica {
   issues: Issue[]
   sentCodes: string[]
   writes: { method: string; path: string; body: unknown }[]
+  projects: { id: string; title: string; status: string; description?: string | null }[]
+  /** When true every wakeup POST fails, as on a backend without conditions. */
+  wakeupsFail: boolean
+  /** When true issue reads answer 404 "workspace not found", as while Multica's database is unreachable. */
+  dbDown: boolean
   /** When true every API call answers 401, as after an expired session. */
   expired: boolean
 }
@@ -68,6 +73,13 @@ export async function startFakeMultica(): Promise<FakeMultica> {
     sentCodes: [],
     writes: [],
     expired: false,
+    wakeupsFail: false,
+    dbDown: false,
+    projects: [
+      { id: P_MULTICA, title: 'Multica', status: 'planned' },
+      { id: P_CRM, title: 'CRM (m2s)', status: 'in_progress' },
+      { id: 'p-map', title: 'map.multica', status: 'in_progress' },
+    ],
     issues: [
       fakeIssue(1, {
         title: 'MCP-Connector bauen',
@@ -108,14 +120,44 @@ export async function startFakeMultica(): Promise<FakeMultica> {
       return send(401, { error: 'unauthorized' })
     }
     const p = url.pathname.replace(/\/+$/, '')
-    if (req.method === 'GET' && p === '/api/projects') {
-      return send(200, {
-        projects: [
-          { id: P_MULTICA, title: 'Multica', status: 'planned' },
-          { id: P_CRM, title: 'CRM (m2s)', status: 'in_progress' },
-          { id: 'p-map', title: 'map.multica', status: 'in_progress' },
-        ],
-      })
+    if (req.method === 'GET' && p === '/api/projects') return send(200, { projects: state.projects })
+    if (req.method === 'POST' && p === '/api/projects') {
+      const b = await body(req)
+      state.writes.push({ method: 'POST', path: p, body: b })
+      const created = { id: `p-${next++}`, title: String(b.title), status: String(b.status ?? 'planned'), description: (b.description as string) ?? null }
+      state.projects.push(created)
+      return send(201, created)
+    }
+    const pm = /^\/api\/projects\/([^/]+)$/.exec(p)
+    if (pm) {
+      const project = state.projects.find((x) => x.id === pm[1])
+      if (!project) return send(404, { error: 'project not found' })
+      if (req.method === 'GET') return send(200, project)
+      if (req.method === 'PUT') {
+        const b = await body(req)
+        state.writes.push({ method: 'PUT', path: p, body: b })
+        Object.assign(project, b)
+        return send(200, project)
+      }
+    }
+    if (req.method === 'GET' && p === '/api/labels') {
+      return send(200, [
+        { id: 'l-m2s', name: 'bereich/Model to Star' },
+        { id: 'l-mvm', name: 'bereich/Multiversemedia' },
+        { id: 'l-bill', name: 'Abrechnung' },
+      ])
+    }
+    if (req.method === 'POST' && p === '/api/issues/batch-update') {
+      const b = (await body(req)) as { issue_ids: string[]; updates: Record<string, unknown> }
+      state.writes.push({ method: 'POST', path: p, body: b })
+      let updated = 0
+      for (const id of b.issue_ids) {
+        const issue = state.issues.find((i) => i.id === id)
+        if (!issue) continue
+        Object.assign(issue, b.updates, { updated_at: iso(0) })
+        updated++
+      }
+      return send(200, { updated })
     }
     if (req.method === 'GET' && p === '/api/agents') {
       return send(200, [
@@ -150,7 +192,8 @@ export async function startFakeMultica(): Promise<FakeMultica> {
       const dir = url.searchParams.get('direction') === 'asc' ? 1 : -1
       list.sort((x, y) => dir * x[col].localeCompare(y[col]))
       const limit = Math.min(Number(url.searchParams.get('limit') ?? 50), 100)
-      return send(200, { issues: list.slice(0, limit), total: list.length, has_more: list.length > limit })
+      const offset = Number(url.searchParams.get('offset') ?? 0)
+      return send(200, { issues: list.slice(offset, offset + limit), total: list.length, has_more: list.length > offset + limit })
     }
     if (req.method === 'POST' && p === '/api/issues') {
       const b = await body(req)
@@ -160,13 +203,21 @@ export async function startFakeMultica(): Promise<FakeMultica> {
       state.issues.push(i)
       return send(201, i)
     }
-    const m = /^\/api\/issues\/([^/]+)(\/comments)?$/.exec(p)
+    const m = /^\/api\/issues\/([^/]+)(\/comments|\/children|\/wakeups)?$/.exec(p)
     if (m) {
+      if (state.dbDown) return send(404, { error: 'workspace not found' })
       const ref = decodeURIComponent(m[1])
       const issue = state.issues.find((i) => i.id === ref || i.identifier === ref)
       if (!issue) return send(404, { error: 'issue not found' })
-      if (m[2] && req.method === 'GET') return send(200, issue.identifier === 'MS-1' ? comments : [])
-      if (m[2] && req.method === 'POST') {
+      if (m[2] === '/children' && req.method === 'GET') return send(200, { issues: state.issues.filter((i) => i.parent_issue_id === issue.id) })
+      if (m[2] === '/wakeups' && req.method === 'POST') {
+        const b = await body(req)
+        if (state.wakeupsFail) return send(400, { error: 'invalid wakeup body' })
+        state.writes.push({ method: 'POST', path: p, body: b })
+        return send(201, { id: `w-${next++}` })
+      }
+      if (m[2] === '/comments' && req.method === 'GET') return send(200, issue.identifier === 'MS-1' ? comments : [])
+      if (m[2] === '/comments' && req.method === 'POST') {
         const b = await body(req)
         state.writes.push({ method: 'POST', path: p, body: b })
         return send(201, { id: 'c-new', author_type: 'member', author_id: FLOW, content: b.content, created_at: iso(0) })

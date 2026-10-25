@@ -27,7 +27,23 @@ describe('mehr als eine Seite', () => {
     const open = h.fake.issues.filter((i) => !['done', 'cancelled'].includes(i.status)).length
     assert.ok(open > 100)
     const r = await callTool(client, 'list_issues', { limit: 1 })
-    assert.equal(r.text, `${open} Issues offen, zuletzt geänderte zuerst. MS-5: Uralt, gerade bearbeitet. Backlog, ohne Zuständigen, geändert vor einer Stunde. Das waren die 1 zuletzt geänderten.`)
+    assert.equal(r.text, `${open} Issues offen, zuletzt geänderte zuerst. MS-5: Uralt, gerade bearbeitet. Backlog, ohne Zuständigen, geändert vor einer Stunde. Das waren die 1 zuletzt geänderten. Weitere mit Seite 2.`)
+  })
+
+  it('blättert seitenweise weiter', async () => {
+    const open = h.fake.issues.filter((i) => !['done', 'cancelled'].includes(i.status)).length
+    const p2 = await callTool(client, 'list_issues', { limit: 100, page: 2 })
+    assert.match(p2.text, new RegExp(`^${open} Issues offen`))
+    assert.match(p2.text, new RegExp(`Das waren die Nummern 101 bis ${open}\\.$`))
+    const p1 = await callTool(client, 'list_issues', { limit: 100 })
+    assert.match(p1.text, /Das waren die 100 zuletzt geänderten\. Weitere mit Seite 2\.$/)
+    assert.match((await callTool(client, 'list_issues', { limit: 100, page: 3 })).text, /Seite 3 ist leer\.$/)
+  })
+
+  it('blättert auch im Zeitraum, die übersprungenen zählen mit', async () => {
+    const r = await callTool(client, 'list_issues', { days: 30, limit: 50, page: 2 })
+    assert.match(r.text, /^Mindestens 150 Issues offen aus den letzten 30 Tagen/)
+    assert.match(r.text, /Nummern 51 bis 100\. Weitere mit Seite 3\.$/)
   })
 
   it('zählt im Zeitraum exakt, wenn die Seite nicht voll ist', async () => {
