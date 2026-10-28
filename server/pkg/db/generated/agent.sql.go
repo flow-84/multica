@@ -1570,6 +1570,16 @@ WHERE id = (
             AND COALESCE(r.last_seen_at, r.updated_at) >=
                 now() - make_interval(secs => $4::double precision)
       )
+      -- Keep this paused-project fence identical in ClaimAgentTask and both claim candidate lists:
+      -- a paused project starts nothing new; running tasks finish normally.
+      AND NOT EXISTS (
+          SELECT 1 FROM project p
+          WHERE p.status = 'paused'
+            AND p.id = COALESCE(
+                (SELECT i.project_id FROM issue i WHERE i.id = atq.issue_id),
+                (SELECT ap.project_id FROM autopilot_run ar JOIN autopilot ap ON ap.id = ar.autopilot_id WHERE ar.id = atq.autopilot_run_id)
+            )
+      )
       AND NOT EXISTS (
           SELECT 1 FROM agent_task_queue active
           WHERE active.agent_id = atq.agent_id
@@ -6008,6 +6018,16 @@ WHERE atq.runtime_id = $1
             OR r.visibility = 'private'
         )
   )
+  -- Keep this paused-project fence identical in ClaimAgentTask and both claim candidate lists:
+  -- a paused project starts nothing new; running tasks finish normally.
+  AND NOT EXISTS (
+      SELECT 1 FROM project p
+      WHERE p.status = 'paused'
+        AND p.id = COALESCE(
+            (SELECT i.project_id FROM issue i WHERE i.id = atq.issue_id),
+            (SELECT ap.project_id FROM autopilot_run ar JOIN autopilot ap ON ap.id = ar.autopilot_id WHERE ar.id = atq.autopilot_run_id)
+        )
+  )
 ORDER BY atq.priority DESC, atq.created_at ASC
 `
 
@@ -6117,6 +6137,16 @@ WHERE atq.runtime_id = ANY($1::uuid[])
             OR r.visibility = 'private'
         )
   )
+  -- Keep this paused-project fence identical in ClaimAgentTask and both claim candidate lists:
+  -- a paused project starts nothing new; running tasks finish normally.
+  AND NOT EXISTS (
+      SELECT 1 FROM project p
+      WHERE p.status = 'paused'
+        AND p.id = COALESCE(
+            (SELECT i.project_id FROM issue i WHERE i.id = atq.issue_id),
+            (SELECT ap.project_id FROM autopilot_run ar JOIN autopilot ap ON ap.id = ar.autopilot_id WHERE ar.id = atq.autopilot_run_id)
+        )
+  )
 ORDER BY atq.priority DESC, atq.created_at ASC
 `
 
@@ -6132,6 +6162,101 @@ ORDER BY atq.priority DESC, atq.created_at ASC
 // candidate set is small, so this is cheap in practice.
 func (q *Queries) ListQueuedClaimCandidatesByRuntimes(ctx context.Context, runtimeIds []pgtype.UUID) ([]AgentTaskQueue, error) {
 	rows, err := q.db.Query(ctx, listQueuedClaimCandidatesByRuntimes, runtimeIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentTaskQueue{}
+	for rows.Next() {
+		var i AgentTaskQueue
+		if err := rows.Scan(
+			&i.ID,
+			&i.AgentID,
+			&i.IssueID,
+			&i.Status,
+			&i.Priority,
+			&i.DispatchedAt,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.Result,
+			&i.Error,
+			&i.CreatedAt,
+			&i.Context,
+			&i.RuntimeID,
+			&i.SessionID,
+			&i.WorkDir,
+			&i.TriggerCommentID,
+			&i.ChatSessionID,
+			&i.AutopilotRunID,
+			&i.Attempt,
+			&i.MaxAttempts,
+			&i.ParentTaskID,
+			&i.FailureReason,
+			&i.TriggerSummary,
+			&i.ForceFreshSession,
+			&i.IsLeaderTask,
+			&i.WaitReason,
+			&i.InitiatorUserID,
+			&i.HandoffNote,
+			&i.PrepareLeaseExpiresAt,
+			&i.SquadID,
+			&i.RuntimeMcpOverlay,
+			&i.EscalationForTaskID,
+			&i.FireAt,
+			&i.OriginatorUserID,
+			&i.RuntimeConnectedApps,
+			&i.CoalescedCommentIds,
+			&i.DeliveredCommentIds,
+			&i.ChatInputTaskID,
+			&i.ChatFinalizeDeferredAt,
+			&i.OriginatorSource,
+			&i.DelegatedFromTaskID,
+			&i.RetryOfTaskID,
+			&i.RerunOfTaskID,
+			&i.RuleVersionID,
+			&i.TriggerEvidenceKind,
+			&i.TriggerEvidenceRefID,
+			&i.AccountableUserID,
+			&i.SessionRolloutMissing,
+			&i.RetiredSessionID,
+			&i.QuickActionsDisabled,
+			&i.RegenerateQuickActionsFor,
+			&i.BranchName,
+			&i.DurableWorkDir,
+			&i.ChannelContextRevision,
+			&i.CommentThreadID,
+			&i.CancelledByType,
+			&i.CancelledByID,
+			&i.CancelledByName,
+			&i.IssueSnapshot,
+			&i.WorkflowStep,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listQueuedTasksForProject = `-- name: ListQueuedTasksForProject :many
+SELECT atq.id, atq.agent_id, atq.issue_id, atq.status, atq.priority, atq.dispatched_at, atq.started_at, atq.completed_at, atq.result, atq.error, atq.created_at, atq.context, atq.runtime_id, atq.session_id, atq.work_dir, atq.trigger_comment_id, atq.chat_session_id, atq.autopilot_run_id, atq.attempt, atq.max_attempts, atq.parent_task_id, atq.failure_reason, atq.trigger_summary, atq.force_fresh_session, atq.is_leader_task, atq.wait_reason, atq.initiator_user_id, atq.handoff_note, atq.prepare_lease_expires_at, atq.squad_id, atq.runtime_mcp_overlay, atq.escalation_for_task_id, atq.fire_at, atq.originator_user_id, atq.runtime_connected_apps, atq.coalesced_comment_ids, atq.delivered_comment_ids, atq.chat_input_task_id, atq.chat_finalize_deferred_at, atq.originator_source, atq.delegated_from_task_id, atq.retry_of_task_id, atq.rerun_of_task_id, atq.rule_version_id, atq.trigger_evidence_kind, atq.trigger_evidence_ref_id, atq.accountable_user_id, atq.session_rollout_missing, atq.retired_session_id, atq.quick_actions_disabled, atq.regenerate_quick_actions_for, atq.branch_name, atq.durable_work_dir, atq.channel_context_revision, atq.comment_thread_id, atq.cancelled_by_type, atq.cancelled_by_id, atq.cancelled_by_name, atq.issue_snapshot, atq.workflow_step FROM agent_task_queue atq
+WHERE atq.status = 'queued'
+  AND (
+      atq.issue_id IN (SELECT i.id FROM issue i WHERE i.project_id = $1)
+      OR atq.autopilot_run_id IN (
+          SELECT ar.id FROM autopilot_run ar JOIN autopilot ap ON ap.id = ar.autopilot_id
+          WHERE ap.project_id = $1
+      )
+  )
+`
+
+// Queued tasks whose issue or autopilot belongs to the project. Used to wake
+// daemons when a paused project resumes so its held-back work starts promptly.
+func (q *Queries) ListQueuedTasksForProject(ctx context.Context, projectID pgtype.UUID) ([]AgentTaskQueue, error) {
+	rows, err := q.db.Query(ctx, listQueuedTasksForProject, projectID)
 	if err != nil {
 		return nil, err
 	}

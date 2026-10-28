@@ -7170,6 +7170,20 @@ func (s *TaskService) NotifyTaskEnqueued(ctx context.Context, task db.AgentTaskQ
 	s.notifyTaskAvailable(task)
 }
 
+// NotifyProjectResumed wakes the runtimes holding queued work of a project
+// that just left 'paused'. Claims skip paused projects, so those rows sat in
+// the queue while an empty-claim verdict may have been cached for them.
+func (s *TaskService) NotifyProjectResumed(ctx context.Context, projectID pgtype.UUID) {
+	tasks, err := s.Queries.ListQueuedTasksForProject(ctx, projectID)
+	if err != nil {
+		slog.Warn("list queued tasks for resumed project failed", "project_id", util.UUIDToString(projectID), "error", err)
+		return
+	}
+	for _, task := range tasks {
+		s.notifyTaskAvailable(task)
+	}
+}
+
 // NotifyTaskFinished invalidates a runtime's empty-claim verdict and emits a
 // best-effort daemon wakeup after a task reaches a terminal state. The task ID
 // is deliberately omitted from the wakeup payload: the completed task itself

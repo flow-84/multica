@@ -758,6 +758,16 @@ WHERE id = (
             AND COALESCE(r.last_seen_at, r.updated_at) >=
                 now() - make_interval(secs => @runtime_stale_secs::double precision)
       )
+      -- Keep this paused-project fence identical in ClaimAgentTask and both claim candidate lists:
+      -- a paused project starts nothing new; running tasks finish normally.
+      AND NOT EXISTS (
+          SELECT 1 FROM project p
+          WHERE p.status = 'paused'
+            AND p.id = COALESCE(
+                (SELECT i.project_id FROM issue i WHERE i.id = atq.issue_id),
+                (SELECT ap.project_id FROM autopilot_run ar JOIN autopilot ap ON ap.id = ar.autopilot_id WHERE ar.id = atq.autopilot_run_id)
+            )
+      )
       AND NOT EXISTS (
           SELECT 1 FROM agent_task_queue active
           WHERE active.agent_id = atq.agent_id
@@ -2136,6 +2146,16 @@ WHERE atq.runtime_id = $1
             OR r.visibility = 'private'
         )
   )
+  -- Keep this paused-project fence identical in ClaimAgentTask and both claim candidate lists:
+  -- a paused project starts nothing new; running tasks finish normally.
+  AND NOT EXISTS (
+      SELECT 1 FROM project p
+      WHERE p.status = 'paused'
+        AND p.id = COALESCE(
+            (SELECT i.project_id FROM issue i WHERE i.id = atq.issue_id),
+            (SELECT ap.project_id FROM autopilot_run ar JOIN autopilot ap ON ap.id = ar.autopilot_id WHERE ar.id = atq.autopilot_run_id)
+        )
+  )
 ORDER BY atq.priority DESC, atq.created_at ASC;
 
 -- name: CancelSupersededDeferredRetriesForRuntimes :many
@@ -2255,6 +2275,16 @@ WHERE atq.runtime_id = ANY(@runtime_ids::uuid[])
         AND (
             r.visibility = 'public'
             OR r.visibility = 'private'
+        )
+  )
+  -- Keep this paused-project fence identical in ClaimAgentTask and both claim candidate lists:
+  -- a paused project starts nothing new; running tasks finish normally.
+  AND NOT EXISTS (
+      SELECT 1 FROM project p
+      WHERE p.status = 'paused'
+        AND p.id = COALESCE(
+            (SELECT i.project_id FROM issue i WHERE i.id = atq.issue_id),
+            (SELECT ap.project_id FROM autopilot_run ar JOIN autopilot ap ON ap.id = ar.autopilot_id WHERE ar.id = atq.autopilot_run_id)
         )
   )
 ORDER BY atq.priority DESC, atq.created_at ASC;
@@ -2680,3 +2710,16 @@ RETURNING *;
 
 -- name: GetCommentThreadRootID :one
 SELECT comment_thread_root_id(@comment_id::uuid)::uuid AS id;
+
+-- name: ListQueuedTasksForProject :many
+-- Queued tasks whose issue or autopilot belongs to the project. Used to wake
+-- daemons when a paused project resumes so its held-back work starts promptly.
+SELECT atq.* FROM agent_task_queue atq
+WHERE atq.status = 'queued'
+  AND (
+      atq.issue_id IN (SELECT i.id FROM issue i WHERE i.project_id = @project_id)
+      OR atq.autopilot_run_id IN (
+          SELECT ar.id FROM autopilot_run ar JOIN autopilot ap ON ap.id = ar.autopilot_id
+          WHERE ap.project_id = @project_id
+      )
+  );

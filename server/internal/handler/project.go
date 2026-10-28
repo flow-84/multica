@@ -619,6 +619,10 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 	resp.IssueCount, resp.DoneCount = h.loadProjectIssueStats(r.Context(), wsUUID, project.ID)
 	resp.ResourceCount = h.loadProjectResourceCount(r.Context(), project.ID)
 	h.publish(protocol.EventProjectUpdated, workspaceID, "member", userID, map[string]any{"project": resp})
+	if prevProject.Status == "paused" && project.Status != "paused" && h.TaskService != nil {
+		// Claims skip paused projects; wake daemons for the work held back.
+		h.TaskService.NotifyProjectResumed(r.Context(), project.ID)
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
