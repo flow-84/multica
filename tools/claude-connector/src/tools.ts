@@ -6,7 +6,7 @@ import { z } from 'zod'
 import { type Agent, type Issue, type Label, type Member, MulticaApi, MulticaError, type Project } from './multica.ts'
 import { type Clock, audit } from './store.ts'
 
-export const SERVER_INFO = { name: 'multica', version: '1.1.0' }
+export const SERVER_INFO = { name: 'multica', version: '1.2.0' }
 
 const INSTRUCTIONS = [
   'Steuert den Multica-Workspace von fl0w (Issues, Projekte, Agenten). Antworten sind kurze deutsche Sätze zum Vorlesen.',
@@ -15,6 +15,7 @@ const INSTRUCTIONS = [
   'Ein Issue mit Status todo und einem Agenten als Zuständigem startet sofort einen Agentenlauf.',
   'Gibt es ein genanntes Projekt noch nicht, wird es mit create_project angelegt, nicht über eine Karte an einen Agenten.',
   'Unterkarten entstehen mit create_issue und parent, Abhängigkeiten mit blocked_by oder blocks.',
+  'Tippfehler in Titel, Beschreibung oder Kommentar werden mit update_issue oder edit_comment korrigiert, die Karte wird dafür nicht neu angelegt.',
 ].join(' ')
 
 export const STATUS = ['backlog', 'todo', 'in_progress', 'in_review', 'done', 'blocked', 'cancelled'] as const
@@ -298,7 +299,7 @@ async function getIssue(c: Ctx, a: { issue: string }): Promise<string> {
   const desc = speakable(i.description, 700)
   parts.push(desc ? `Beschreibung: ${desc}` : 'Keine Beschreibung.')
   if (comments.length) {
-    parts.push(`Letzte ${comments.length === 1 ? 'Kommentar' : `${comments.length} Kommentare`}:`)
+    parts.push(comments.length === 1 ? 'Letzter Kommentar:' : `Letzte ${comments.length} Kommentare:`)
     for (const cm of comments) {
       const author = assigneeName(people, cm.author_type, cm.author_id) ?? 'System'
       parts.push(`${author}, ${ago(cm.created_at, c.nowMs)}: ${speakable(cm.content, 350)}`)
@@ -405,35 +406,192 @@ async function createIssue(c: Ctx, a: z.infer<z.ZodObject<typeof createIssueInpu
   return { text: said.join(' '), target: i.identifier }
 }
 
+const NONE = new Set(['keine', 'keiner', 'kein', 'niemand', 'ohne', 'none'])
+
 export const updateIssueInput = {
   issue: z.string().min(2).max(40).describe('Kennung wie MS-2400'),
+  title: z.string().min(3).max(200).optional().describe('Neuer Titel, etwa um einen Tippfehler zu korrigieren'),
+  description: z.string().max(10_000).optional().describe('Neue Beschreibung, ersetzt die bisherige vollständig'),
+  old_text: z.string().min(1).max(2_000).optional().describe('Statt der ganzen Beschreibung nur diese Stelle ersetzen: der bisherige Wortlaut, er muss genau einmal vorkommen'),
+  new_text: z.string().max(10_000).optional().describe('Ersatz für old_text, leer zum Löschen der Stelle'),
   status: z.enum(STATUS).optional().describe('Neuer Status'),
   assignee: z.string().optional().describe('Neuer Zuständiger (Name), "ich" für fl0w, "niemand" zum Entfernen'),
+  priority: z.enum(PRIORITY).optional().describe('Neue Priorität'),
+  labels: z.array(z.string().min(1).max(80)).max(10).optional().describe('Genau diese Labels, alle anderen werden entfernt. Leere Liste entfernt alle.'),
+  add_labels: z.array(z.string().min(1).max(80)).max(10).optional().describe('Diese Labels zusätzlich setzen'),
+  remove_labels: z.array(z.string().min(1).max(80)).max(10).optional().describe('Diese Labels entfernen'),
+  parent: z.string().min(2).max(40).optional().describe('Neue Oberkarte (Kennung wie MS-2400), "keine" macht die Karte wieder eigenständig'),
+  stage: z.number().int().min(0).max(50).optional().describe('Stufe unter der Oberkarte, 0 entfernt die Stufe'),
 }
 
+/** "a", "a und b", "a, b und c". */
+const listDe = (parts: string[]) => (parts.length < 2 ? parts.join('') : `${parts.slice(0, -1).join(', ')} und ${parts.at(-1)}`)
+
+const quote = (t: string) => `„${speakable(t, 60)}“`
+
+/** Replace the single occurrence of `oldText`; anything else is a question back to the user. */
+function replaceOnce(text: string, oldText: string, newText: string, where: string): string {
+  const n = text.split(oldText).length - 1
+  if (n === 0) throw new Say(`${quote(oldText)} steht nicht in ${where}. Bitte den Wortlaut genau so nennen, wie er dort steht.`)
+  if (n > 1) throw new Say(`${quote(oldText)} kommt ${n}-mal in ${where} vor. Bitte einen längeren Ausschnitt nennen, der nur einmal vorkommt.`)
+  return text.replace(oldText, () => newText)
+}
+
+const isConflict = (err: unknown) => err instanceof MulticaError && err.status === 409
+
 async function updateIssue(c: Ctx, a: z.infer<z.ZodObject<typeof updateIssueInput>>): Promise<{ text: string; target: string }> {
-  if (!a.status && !a.assignee) throw new Say('Was soll sich ändern, der Status oder der Zuständige?')
-  const i = await loadIssue(c.api, a.issue)
+  const fields = ['title', 'description', 'old_text', 'status', 'assignee', 'priority', 'labels', 'add_labels', 'remove_labels', 'parent', 'stage'] as const
+  if (!fields.some((f) => a[f] !== undefined)) {
+    throw new Say('Was soll sich ändern? Möglich sind Titel, Beschreibung, Status, Zuständiger, Priorität, Labels, Oberkarte und Stufe.')
+  }
+  if (a.description !== undefined && a.old_text !== undefined) throw new Say('Entweder die ganze Beschreibung ersetzen oder eine Stelle darin, nicht beides.')
+  if (a.old_text !== undefined && a.new_text === undefined) throw new Say(`Wodurch soll ${quote(a.old_text)} ersetzt werden?`)
+  if (a.new_text !== undefined && a.old_text === undefined) throw new Say('Welche Stelle der Beschreibung soll ersetzt werden?')
+  if (a.labels && (a.add_labels || a.remove_labels)) throw new Say('Entweder alle Labels neu setzen oder einzelne hinzufügen und entfernen, nicht beides.')
+
+  // Resolve everything first: a wrong name must not leave a half-changed card behind.
+  const removeParent = a.parent !== undefined && NONE.has(norm(a.parent))
+  const [i, parent, people, wanted, added, removed] = await Promise.all([
+    loadIssue(c.api, a.issue),
+    a.parent && !removeParent ? loadIssue(c.api, a.parent) : undefined,
+    a.assignee && !NOBODY.has(norm(a.assignee)) ? loadPeople(c.api) : undefined,
+    a.labels ? resolveLabels(c.api, a.labels) : undefined,
+    resolveLabels(c.api, a.add_labels ?? []),
+    resolveLabels(c.api, a.remove_labels ?? []),
+  ])
+  if (parent?.id === i.id) throw new Say('Eine Karte kann nicht ihre eigene Oberkarte sein.')
+  if (a.stage && !parent && (removeParent || !i.parent_issue_id)) throw new Say(`${i.identifier} hat keine Oberkarte, eine Stufe gibt es nur darunter. Unter welcher Karte?`)
+
   const body: Record<string, unknown> = {}
   const said: string[] = []
+  if (a.title !== undefined && a.title.trim() !== i.title) {
+    body.title = a.title.trim()
+    body.title_base = i.title
+    said.push(`heißt jetzt „${body.title}“`)
+  }
+  if (a.description !== undefined) {
+    body.description = a.description.trim()
+    said.push(a.description.trim() ? 'hat eine neue Beschreibung' : 'hat keine Beschreibung mehr')
+  } else if (a.old_text !== undefined && a.new_text !== undefined) {
+    body.description = replaceOnce(i.description ?? '', a.old_text, a.new_text, `der Beschreibung von ${i.identifier}`)
+    said.push(a.new_text ? `hat in der Beschreibung jetzt ${quote(a.new_text)} statt ${quote(a.old_text)}` : `hat ${quote(a.old_text)} nicht mehr in der Beschreibung`)
+  }
+  if (body.description !== undefined && i.description != null) body.description_base = i.description
   if (a.status) {
     body.status = a.status
     said.push(`steht auf ${statusDe(a.status)}`)
   }
   if (a.assignee) {
-    if (NOBODY.has(norm(a.assignee))) {
+    if (!people) {
       body.assignee_type = null
       body.assignee_id = null
       said.push('hat keinen Zuständigen mehr')
     } else {
-      const who = resolveAssignee(await loadPeople(c.api), a.assignee, c.userId)
+      const who = resolveAssignee(people, a.assignee, c.userId)
       body.assignee_type = who.type
       body.assignee_id = who.id
       said.push(`liegt bei ${who.name}`)
     }
   }
-  const u = await c.api.updateIssue(i.id, body)
-  return { text: `${u.identifier} ${said.join(' und ')}.`, target: u.identifier }
+  if (a.priority) {
+    body.priority = a.priority
+    said.push(`hat Priorität ${PRIORITY_DE[a.priority]}`)
+  }
+  if (removeParent) {
+    body.parent_issue_id = null
+    body.stage = null
+    said.push('ist keine Unterkarte mehr')
+  } else if (parent) {
+    body.parent_issue_id = parent.id
+    said.push(`ist Unterkarte von ${parent.identifier}`)
+  }
+  if (a.stage !== undefined && !removeParent) {
+    body.stage = a.stage === 0 ? null : a.stage
+    said.push(a.stage === 0 ? 'hat keine Stufe mehr' : `liegt in Stufe ${a.stage}`)
+  }
+
+  let u = i
+  if (Object.keys(body).length) {
+    try {
+      u = await c.api.updateIssue(i.id, body)
+    } catch (err) {
+      if (isConflict(err)) throw new Say(`${i.identifier} wurde gerade woanders geändert. Bitte die Karte neu lesen und die Änderung noch einmal sagen.`)
+      throw err
+    }
+  }
+
+  // Labels have their own endpoints. The card may already be changed from here on,
+  // so a failure is reported instead of hiding behind "nichts geändert".
+  if (wanted || added.length || removed.length) {
+    try {
+      const current = await c.api.labelsOf(i.id)
+      const has = new Set(current.map((l) => l.id))
+      const target = wanted ?? [...current.filter((l) => !removed.some((r) => r.id === l.id)), ...added.filter((l) => !has.has(l.id))]
+      const keep = new Set(target.map((l) => l.id))
+      for (const l of target) if (!has.has(l.id)) await c.api.attachLabel(i.id, l.id)
+      for (const l of current) if (!keep.has(l.id)) await c.api.detachLabel(i.id, l.id)
+      said.push(target.length ? `hat die Labels ${target.map((l) => l.name).join(', ')}` : 'hat keine Labels mehr')
+    } catch (err) {
+      if (err instanceof MulticaError && err.status === 401) throw err
+      const text = said.length ? `${u.identifier} ${listDe(said)}. Die Labels konnte ich aber nicht ändern.` : `Die Labels von ${u.identifier} konnte ich nicht ändern.`
+      return { text, target: u.identifier }
+    }
+  }
+  if (!said.length) return { text: `${u.identifier} ist schon so, es hat sich nichts geändert.`, target: u.identifier }
+  return { text: `${u.identifier} ${listDe(said)}.`, target: u.identifier }
+}
+
+export const editCommentInput = {
+  issue: z.string().min(2).max(40).describe('Kennung der Karte, an der der Kommentar steht, wie MS-2400'),
+  comment: z
+    .string()
+    .min(8)
+    .max(40)
+    .optional()
+    .describe('Kennung des Kommentars (UUID oder ihre ersten acht Zeichen). Ohne Angabe: mit old_text der jüngste Kommentar, der die Stelle enthält, sonst der jüngste Kommentar von fl0w.'),
+  text: z.string().min(1).max(10_000).optional().describe('Neuer Wortlaut, ersetzt den Kommentar vollständig'),
+  old_text: z.string().min(1).max(2_000).optional().describe('Statt des ganzen Kommentars nur diese Stelle ersetzen'),
+  new_text: z.string().max(10_000).optional().describe('Ersatz für old_text, leer zum Löschen der Stelle'),
+}
+
+async function editComment(c: Ctx, a: z.infer<z.ZodObject<typeof editCommentInput>>): Promise<{ text: string; target: string }> {
+  if ((a.text === undefined) === (a.old_text === undefined)) throw new Say('Soll der ganze Kommentar neu lauten (text) oder nur eine Stelle ersetzt werden (old_text und new_text)?')
+  if (a.old_text !== undefined && a.new_text === undefined) throw new Say(`Wodurch soll ${quote(a.old_text)} ersetzt werden?`)
+  const i = await loadIssue(c.api, a.issue)
+  const all = await c.api.comments(i.id)
+  let target: (typeof all)[number] | undefined
+  if (a.comment) {
+    const ref = a.comment.trim().toLowerCase()
+    const hits = all.filter((k) => k.id.toLowerCase().startsWith(ref))
+    if (hits.length > 1) throw new Say('Diese Kommentar-Kennung passt auf mehrere Kommentare. Bitte die ganze Kennung nennen.')
+    target = hits[0]
+    if (!target) throw new Say(`An ${i.identifier} gibt es keinen Kommentar mit dieser Kennung.`)
+  } else if (a.old_text !== undefined) {
+    const oldText = a.old_text
+    target = all.findLast((k) => k.content.includes(oldText))
+    if (!target) throw new Say(`${quote(oldText)} steht in keinem Kommentar an ${i.identifier}.`)
+  } else {
+    target = all.findLast((k) => k.author_type === 'member' && k.author_id === c.userId)
+    if (!target) throw new Say(`An ${i.identifier} gibt es keinen Kommentar von dir. Welcher Kommentar ist gemeint?`)
+  }
+  const content = a.text !== undefined ? a.text.trim() : replaceOnce(target.content, a.old_text ?? '', a.new_text ?? '', 'dem Kommentar').trim()
+  if (!content) throw new Say('Ein Kommentar darf nicht leer werden.')
+  if (content === target.content) return { text: `Der Kommentar an ${i.identifier} lautet schon so, nichts geändert.`, target: i.identifier }
+  try {
+    await c.api.updateComment(target.id, content, target.content)
+  } catch (err) {
+    if (isConflict(err)) throw new Say(`Der Kommentar an ${i.identifier} wurde gerade woanders geändert. Bitte noch einmal.`)
+    if (err instanceof MulticaError && err.status === 403) throw new Say('Diesen Kommentar darf nur sein Verfasser oder ein Admin ändern.')
+    throw err
+  }
+  const when = ago(target.created_at, c.nowMs)
+  return {
+    text:
+      a.text !== undefined
+        ? `Kommentar an ${i.identifier} von ${when} neu gefasst.`
+        : `Im Kommentar an ${i.identifier} von ${when} steht jetzt ${a.new_text ? quote(a.new_text) : 'nichts mehr'} statt ${quote(a.old_text ?? '')}.`,
+    target: i.identifier,
+  }
 }
 
 export const addCommentInput = {
@@ -743,8 +901,9 @@ export function buildMcpServer(deps: ToolDeps, who: Principal): McpServer {
   server.registerTool(
     'update_issue',
     {
-      title: 'Status oder Zuständigen ändern',
-      description: 'Ändert den Status und/oder den Zuständigen eines Issues.',
+      title: 'Karte ändern',
+      description:
+        'Ändert Titel, Beschreibung, Status, Zuständigen, Priorität, Labels, Oberkarte (parent) oder Stufe einer Karte. Nicht genannte Felder bleiben, wie sie sind. Die Beschreibung wird ganz ersetzt (description) oder nur an einer Stelle (old_text, new_text). Tippfehler und falsche Namen hier korrigieren, die Karte nicht abbrechen und neu anlegen. Vorher die Änderung bestätigen lassen.',
       inputSchema: updateIssueInput,
       annotations: { ...WRITE, idempotentHint: true },
     },
@@ -759,6 +918,17 @@ export function buildMcpServer(deps: ToolDeps, who: Principal): McpServer {
       annotations: WRITE,
     },
     async (a) => run('add_comment', true, a, (c) => addComment(c, a)),
+  )
+  server.registerTool(
+    'edit_comment',
+    {
+      title: 'Kommentar bearbeiten',
+      description:
+        'Korrigiert einen vorhandenen Kommentar an einer Karte: ganz neu fassen (text) oder eine Stelle ersetzen (old_text, new_text). Ohne Kommentar-Kennung trifft es mit old_text den jüngsten Kommentar mit dieser Stelle, sonst den jüngsten Kommentar von fl0w. Vorher den neuen Wortlaut bestätigen lassen.',
+      inputSchema: editCommentInput,
+      annotations: { ...WRITE, idempotentHint: true },
+    },
+    async (a) => run('edit_comment', true, a, (c) => editComment(c, a)),
   )
   server.registerTool(
     'bulk_update_issues',
