@@ -299,7 +299,7 @@ async function getIssue(c: Ctx, a: { issue: string }): Promise<string> {
   const desc = speakable(i.description, 700)
   parts.push(desc ? `Beschreibung: ${desc}` : 'Keine Beschreibung.')
   if (comments.length) {
-    parts.push(`Letzte ${comments.length === 1 ? 'Kommentar' : `${comments.length} Kommentare`}:`)
+    parts.push(comments.length === 1 ? 'Letzter Kommentar:' : `Letzte ${comments.length} Kommentare:`)
     for (const cm of comments) {
       const author = assigneeName(people, cm.author_type, cm.author_id) ?? 'System'
       parts.push(`${author}, ${ago(cm.created_at, c.nowMs)}: ${speakable(cm.content, 350)}`)
@@ -474,7 +474,7 @@ async function updateIssue(c: Ctx, a: z.infer<z.ZodObject<typeof updateIssueInpu
     said.push(a.description.trim() ? 'hat eine neue Beschreibung' : 'hat keine Beschreibung mehr')
   } else if (a.old_text !== undefined && a.new_text !== undefined) {
     body.description = replaceOnce(i.description ?? '', a.old_text, a.new_text, `der Beschreibung von ${i.identifier}`)
-    said.push(a.new_text ? `in der Beschreibung steht ${quote(a.new_text)} statt ${quote(a.old_text)}` : `in der Beschreibung ist ${quote(a.old_text)} gestrichen`)
+    said.push(a.new_text ? `hat in der Beschreibung jetzt ${quote(a.new_text)} statt ${quote(a.old_text)}` : `hat ${quote(a.old_text)} nicht mehr in der Beschreibung`)
   }
   if (body.description !== undefined && i.description != null) body.description_base = i.description
   if (a.status) {

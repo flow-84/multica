@@ -40,7 +40,7 @@ describe('update_issue: Karte korrigieren', () => {
     h.fake.issues.push(fakeIssue(501, { description: 'Kunde ist Multivers Media. Frist Freitag.' }))
     const r = await callTool(client, 'update_issue', { issue: 'MS-501', old_text: 'Multivers Media', new_text: 'Multiversemedia' })
     assert.equal(r.isError, false)
-    assert.equal(r.text, 'MS-501 in der Beschreibung steht „Multiversemedia“ statt „Multivers Media“.')
+    assert.equal(r.text, 'MS-501 hat in der Beschreibung jetzt „Multiversemedia“ statt „Multivers Media“.')
     assert.equal(card(501)?.description, 'Kunde ist Multiversemedia. Frist Freitag.')
   })
 
