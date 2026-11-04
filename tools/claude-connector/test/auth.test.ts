@@ -174,6 +174,7 @@ describe('Token', () => {
       'list_issues',
       'list_projects',
       'system_status',
+      'trello_pull',
       'update_issue',
       'update_project',
     ])

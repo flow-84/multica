@@ -13,7 +13,7 @@ https://mcp.aetherapulse.io/mcp
 1. claude.ai → Anpassungen → Konnektoren → „Konnektor hinzufügen“ → „Benutzerdefinierten Konnektor hinzufügen“.
 2. Name `Multica`, MCP-Server-URL wie oben, dann „Weiter“. Die Vorgaben „Jetzt anmelden“ und „Automatisch registrieren“ bleiben stehen, dann „Hinzufügen“.
 3. „Verbinden“ öffnet die Login-Seite des Connectors. Dort muss als Ziel `claude.ai` stehen. „Login-Code an i***@model2star.com senden“ antippen, den sechsstelligen Code aus der Multica-Mail eingeben und „Anmelden und verbinden“ antippen.
-4. Unter Tool-Berechtigungen dürfen die fünf Lese-Werkzeuge immer laufen. Die sieben schreibenden Werkzeuge fragen nach einer Genehmigung.
+4. Unter Tool-Berechtigungen dürfen die fünf Lese-Werkzeuge immer laufen. Die acht schreibenden Werkzeuge fragen nach einer Genehmigung.
 
 Die Android-App übernimmt den Connector automatisch aus dem Konto.
 
@@ -33,10 +33,26 @@ Die Android-App übernimmt den Connector automatisch aus dem Konto.
 | `get_project` | Projekt mit Beschreibung, Karten je Status und letzter Änderung |
 | `system_status` | Daemon und Laufzeiten, arbeitende Agenten, Issues in Arbeit |
 | `list_projects` | Projektnamen, aktive zuerst |
+| `trello_pull` | Neue Karten und Änderungen vom gespiegelten Trello-Board holen (Projekt, optional eine Karte per Kennung oder Trello-Link). Ohne `apply` nur Vorschau, mit `apply: true` übernehmen. Neue Trello-Karten landen im Backlog ohne Zuständigen. |
 
 Multica hat kein eigenes Feld für Abhängigkeiten. `blocked_by` und `blocks` tragen deshalb in die wartende Karte die Zeile „Wartet auf: MS-…“ ein und legen, wenn ein Agent zuständig ist, einen Wecker an, der ihn startet, sobald die Vorgängerkarte erledigt ist. Ohne Agenten bleibt es bei der Zeile. Eine wartende Karte mit Agent wird nicht auf `todo` angelegt, sonst liefe der Agent sofort los.
 
 Alle Antworten sind kurze deutsche Sätze ohne IDs und ohne Markdown, damit sie sich gut vorlesen lassen. Projekte und Zuständige werden über ihren Namen gefunden, Issues über ihre Kennung (auch „ms 2400“). Ein `todo` mit einem Agenten als Zuständigem startet sofort einen Lauf, die Antwort sagt das dazu.
+
+## Trello-Spiegelung (MS-3182)
+
+Projekte aus `trello-sync.json` werden auf ein Trello-Board gespiegelt. Erstes Paar: Drifter 999 auf das Board „Drifter“ (`zTDfk3TC`). Weitere Paare kommen als Eintrag in diese Datei, danach `install.sh` erneut ausführen.
+
+- **Multica nach Trello, automatisch:** Der LaunchAgent `com.fl0w.multica-trello-sync` hört auf die WebSocket-Ereignisse von Multica und bringt die betroffene Karte etwa drei Sekunden später auf Stand. Beim Start und alle 10 Minuten läuft zusätzlich ein voller Abgleich, der verpasste Ereignisse nachholt.
+  - Titel als `MS-1234: Titel`, Beschreibung mit Fußzeile (Link zur Multica-Karte, Zuständiger), Priorität als Label `Priorität: …`, Fälligkeit (12:00 Berliner Zeit), Liste nach Status. Fehlende Listen und Labels legt der Sync an.
+  - Status zu Liste: Backlog → Backlog, Zu erledigen → To-Do, In Arbeit → In Arbeit, Im Review → Review / Marketing, Erledigt → Erledigt, Blockiert → Blockiert. Die Liste „Ideen“ gehört zu keinem Status.
+  - Kommentare, die nach dem Verknüpfen in Multica entstehen, erscheinen als Trello-Kommentar mit Autor und Berliner Zeit.
+  - Abgebrochene, gelöschte oder aus dem Projekt verschobene Karten werden auf Trello archiviert.
+  - Der Sync schreibt nur, was sich in Multica geändert hat. Eine Änderung auf Trello bleibt deshalb stehen, bis sie mit `trello_pull` geholt wird oder Multica dasselbe Feld ändert.
+- **Trello nach Multica, nur auf Abruf:** `trello_pull` im Connector, nie automatisch. Erst Vorschau, dann übernehmen.
+- Zuordnung Kennung zu Trello-Karte und die gespiegelten Kommentare: `~/.local/state/multica-trello-sync/sync.db`. Log: `sync.log` daneben.
+- Zugang: Trello aus `~/.secrets/trello-crm.env` (Konto msx100), Multica mit dem Token des CLI-Profils `desktop-localhost-8080`. Beides wird bei jedem Zugriff gelesen, nichts liegt im Repo oder in der Plist.
+- Neustart: `launchctl kickstart -k gui/$UID/com.fl0w.multica-trello-sync`
 
 ## Beispielsätze
 
@@ -50,6 +66,7 @@ Alle Antworten sind kurze deutsche Sätze ohne IDs und ohne Markdown, damit sie 
 - „Leg ein Projekt Website-Relaunch an und darin eine Karte Konzept mit den Unterkarten Texte und Design. Design wartet auf Texte.“
 - „Setz alle offenen Unterkarten von MS-2700 auf abgebrochen.“
 - „Wie steht das Projekt CRM?“
+- „Was gibt es Neues auf Trello für Drifter 999?“
 
 ## Anmeldung und Sicherheit
 
@@ -87,7 +104,7 @@ claude.ai fragt zuerst `server/discover` mit einer neueren Protokollversion im H
 ```bash
 cd tools/claude-connector
 npm ci
-npm test          # 67 Tests: OAuth Ende zu Ende, alle Werkzeuge und Seitengrenzen gegen eine nachgebaute Multica-API
+npm test          # 78 Tests: OAuth Ende zu Ende, alle Werkzeuge, Seitengrenzen und die Trello-Spiegelung gegen nachgebautes Multica und Trello
 npm run typecheck
 ```
 

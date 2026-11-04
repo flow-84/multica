@@ -12,7 +12,7 @@ import type { Config } from './config.ts'
 import { MulticaError, sendLoginCode, verifyLoginCode } from './multica.ts'
 import { OAuthStore, SCOPE } from './oauth.ts'
 import { type Clock, audit } from './store.ts'
-import { buildMcpServer } from './tools.ts'
+import { type TrelloDeps, buildMcpServer } from './tools.ts'
 
 export interface AppDeps {
   config: Config
@@ -23,6 +23,8 @@ export interface AppDeps {
   authorizeLimit?: number
   /** No access log (tests). */
   quiet?: boolean
+  /** Trello mirror for the trello_pull tool (MS-3182). */
+  trello?: TrelloDeps
 }
 
 const MAX_BODY = 1 << 20
@@ -288,7 +290,15 @@ export function createApp(deps: AppDeps): Server {
     // Stateless: one server and transport per request, JSON instead of SSE.
     // A restart loses nothing and Funnel never holds a stream open.
     const server = buildMcpServer(
-      { db, now, fetch: deps.fetch, multicaUrl: cfg.multicaUrl, workspaceId: cfg.workspaceId, onSessionExpired: (g) => oauth.revokeGrant(g) },
+      {
+        db,
+        now,
+        fetch: deps.fetch,
+        multicaUrl: cfg.multicaUrl,
+        workspaceId: cfg.workspaceId,
+        onSessionExpired: (g) => oauth.revokeGrant(g),
+        trello: deps.trello,
+      },
       who,
     )
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true })

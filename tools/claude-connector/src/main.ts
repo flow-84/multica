@@ -2,10 +2,32 @@
 import { loadConfig } from './config.ts'
 import { createApp } from './http.ts'
 import { openDb, systemClock } from './store.ts'
+import type { TrelloDeps } from './tools.ts'
+import { loadSyncFile, syncEnv } from './trello/config.ts'
+import { SyncStore, openSyncDb } from './trello/sync.ts'
+import { Trello, readTrelloCreds } from './trello/trello.ts'
 
 const config = loadConfig()
 const db = openDb(config.dbPath)
-const server = createApp({ config, db, now: systemClock, fetch })
+
+// The pull shares the mirror's state (card links, comment ids) with the sync daemon.
+function trelloDeps(): TrelloDeps | undefined {
+  const env = syncEnv()
+  try {
+    const file = loadSyncFile(env.syncFile)
+    return {
+      trello: new Trello(fetch, () => readTrelloCreds(env.trelloEnvFile)),
+      store: new SyncStore(openSyncDb(env.syncDb)),
+      pairs: file.pairs,
+      multicaWebUrl: file.multicaWebUrl,
+    }
+  } catch (err) {
+    console.log(`connector: trello_pull aus (${(err as Error).message})`)
+    return undefined
+  }
+}
+
+const server = createApp({ config, db, now: systemClock, fetch, trello: trelloDeps() })
 
 server.listen(config.port, config.host, () => {
   console.log(`connector: listening on http://${config.host}:${config.port}, public ${config.publicUrl}/mcp`)

@@ -21,6 +21,7 @@ export interface Issue {
   project_id: string | null
   parent_issue_id?: string | null
   stage?: number | null
+  due_date?: string | null
   created_at: string
   updated_at: string
 }
@@ -193,6 +194,30 @@ export class MulticaApi {
 
   updateIssue(issueId: string, body: Record<string, unknown>): Promise<Issue> {
     return this.req('PUT', `/api/issues/${issueId}`, body)
+  }
+
+  /** Every comment (replies included) created at or after `since`, oldest first. */
+  async commentsSince(issueId: string, since: string): Promise<Comment[]> {
+    const all = list<Comment & { replies?: Comment[] }>(
+      await this.req('GET', `/api/issues/${issueId}/comments?since=${encodeURIComponent(since)}`),
+      'comments',
+    )
+    const flat = all.flatMap((c) => [c, ...(Array.isArray(c.replies) ? c.replies : [])])
+    const seen = new Set<string>()
+    return flat
+      .filter((c) => !seen.has(c.id) && seen.add(c.id) && c.created_at >= since)
+      .sort((a, b) => a.created_at.localeCompare(b.created_at))
+  }
+
+  /** All issues of a project in every status, paged through. */
+  async projectIssues(projectId: string): Promise<Issue[]> {
+    const out: Issue[] = []
+    const statuses = ['backlog', 'todo', 'in_progress', 'in_review', 'done', 'blocked', 'cancelled']
+    for (let offset = 0; ; offset += 100) {
+      const { issues, total } = await this.listIssues({ projectId, statuses, limit: 100, offset })
+      out.push(...issues)
+      if (!issues.length || out.length >= total) return out
+    }
   }
 
   addComment(issueId: string, content: string): Promise<Comment> {
