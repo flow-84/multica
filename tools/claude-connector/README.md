@@ -13,7 +13,7 @@ https://mcp.aetherapulse.io/mcp
 1. claude.ai → Anpassungen → Konnektoren → „Konnektor hinzufügen“ → „Benutzerdefinierten Konnektor hinzufügen“.
 2. Name `Multica`, MCP-Server-URL wie oben, dann „Weiter“. Die Vorgaben „Jetzt anmelden“ und „Automatisch registrieren“ bleiben stehen, dann „Hinzufügen“.
 3. „Verbinden“ öffnet die Login-Seite des Connectors. Dort muss als Ziel `claude.ai` stehen. „Login-Code an i***@model2star.com senden“ antippen, den sechsstelligen Code aus der Multica-Mail eingeben und „Anmelden und verbinden“ antippen.
-4. Unter Tool-Berechtigungen dürfen die fünf Lese-Werkzeuge immer laufen. Die acht schreibenden Werkzeuge fragen nach einer Genehmigung.
+4. Unter Tool-Berechtigungen dürfen die fünf Lese-Werkzeuge immer laufen. Die neun schreibenden Werkzeuge fragen nach einer Genehmigung.
 
 Die Android-App übernimmt den Connector automatisch aus dem Konto.
 
@@ -24,10 +24,11 @@ Die Android-App übernimmt den Connector automatisch aus dem Konto.
 | `list_issues` | Issues filtern nach Projekt, Status, Zuständigem, Oberkarte (`parent`), Zeitraum (`days`) oder Suchbegriff (`query`). Ohne Status kommen die offenen, unter einer Oberkarte alle. Bis 100 je Seite, weiter mit `page`. Die Zahl ist die Gesamtzahl aus Multica. Wo eine Seitengrenze greift (Zeitraum über 100 Treffer, Suche 50), heißt es „mindestens“. |
 | `get_issue` | Ein Issue mit Beschreibung, Oberkarte, Unterkarten und den letzten drei Kommentaren |
 | `create_issue` | Issue anlegen (Projekt, Titel, Beschreibung, Zuständiger, Status, Priorität), dazu Oberkarte (`parent`, `stage`), Abhängigkeiten (`blocked_by`, `blocks`) und vorhandene Labels. Standard ist `backlog`. |
-| `update_issue` | Status und/oder Zuständigen ändern. `niemand` entfernt den Zuständigen. |
-| `bulk_update_issues` | Status und/oder Zuständigen für bis zu 50 Kennungen oder für alle offenen Unterkarten einer Oberkarte setzen |
+| `update_issue` | Titel, Beschreibung, Status, Zuständigen, Priorität, Labels, Oberkarte, Stufe oder Projekt ändern; nicht genannte Felder bleiben. Beschreibung ganz (`description`) oder an einer Stelle (`old_text`, `new_text`). Labels setzen (`labels`) oder einzeln (`add_labels`, `remove_labels`). `niemand` entfernt den Zuständigen, `parent: keine` die Oberkarte, `stage: 0` die Stufe. `project` verschiebt die Karte in ein anderes Projekt, ihre Unterkarten bleiben, wo sie sind. |
+| `bulk_update_issues` | Status, Zuständigen und/oder Projekt für bis zu 50 Kennungen oder für alle offenen Unterkarten einer Oberkarte setzen |
 | `archive_issue` | Versehentliche Karte abbrechen, auf Wunsch als Duplikat einer anderen. Gelöscht wird nichts. |
 | `add_comment` | Kommentar als fl0w |
+| `edit_comment` | Kommentar korrigieren: ganz (`text`) oder an einer Stelle (`old_text`, `new_text`). Ohne Kennung der jüngste Kommentar mit der Stelle bzw. der jüngste eigene. |
 | `create_project` | Neues Projekt mit Name, Beschreibung und Status (Standard aktiv) |
 | `update_project` | Projekt umbenennen, Beschreibung ersetzen, Status ändern oder archivieren (Status `cancelled`, Karten bleiben) |
 | `get_project` | Projekt mit Beschreibung, Karten je Status und letzter Änderung |
@@ -104,7 +105,7 @@ claude.ai fragt zuerst `server/discover` mit einer neueren Protokollversion im H
 ```bash
 cd tools/claude-connector
 npm ci
-npm test          # 78 Tests: OAuth Ende zu Ende, alle Werkzeuge, Seitengrenzen und die Trello-Spiegelung gegen nachgebautes Multica und Trello
+npm test          # 101 Tests: OAuth Ende zu Ende, alle Werkzeuge, Seitengrenzen und die Trello-Spiegelung gegen nachgebautes Multica und Trello
 npm run typecheck
 ```
 

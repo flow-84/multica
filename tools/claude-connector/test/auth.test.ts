@@ -169,6 +169,7 @@ describe('Token', () => {
       'bulk_update_issues',
       'create_issue',
       'create_project',
+      'edit_comment',
       'get_issue',
       'get_project',
       'list_issues',
