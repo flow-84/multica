@@ -5,8 +5,11 @@ import type { DatabaseSync } from 'node:sqlite'
 import { z } from 'zod'
 import { type Agent, type Issue, type Label, type Member, MulticaApi, MulticaError, type Project } from './multica.ts'
 import { type Clock, audit } from './store.ts'
+import type { Pair } from './trello/config.ts'
+import { type PullPlan, Sync, type SyncStore } from './trello/sync.ts'
+import type { Trello } from './trello/trello.ts'
 
-export const SERVER_INFO = { name: 'multica', version: '1.2.0' }
+export const SERVER_INFO = { name: 'multica', version: '1.3.0' }
 
 const INSTRUCTIONS = [
   'Steuert den Multica-Workspace von fl0w (Issues, Projekte, Agenten). Antworten sind kurze deutsche Sätze zum Vorlesen.',
@@ -16,6 +19,7 @@ const INSTRUCTIONS = [
   'Gibt es ein genanntes Projekt noch nicht, wird es mit create_project angelegt, nicht über eine Karte an einen Agenten.',
   'Unterkarten entstehen mit create_issue und parent, Abhängigkeiten mit blocked_by oder blocks.',
   'Tippfehler in Titel, Beschreibung oder Kommentar werden mit update_issue oder edit_comment korrigiert, die Karte wird dafür nicht neu angelegt.',
+  'trello_pull holt Änderungen vom gespiegelten Trello-Board: erst ohne apply aufrufen, die Vorschau vorlesen und bestätigen lassen, dann mit apply true.',
 ].join(' ')
 
 export const STATUS = ['backlog', 'todo', 'in_progress', 'in_review', 'done', 'blocked', 'cancelled'] as const
@@ -821,6 +825,44 @@ async function listProjects(c: Ctx): Promise<string> {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Trello pull (MS-3182): Trello -> Multica, only on request
+// ---------------------------------------------------------------------------------------------
+
+export const trelloPullInput = {
+  project: z.string().describe('Projektname, z. B. Drifter 999'),
+  card: z.string().max(200).optional().describe('Optional nur eine Karte: Kennung wie MS-3181 oder Trello-Link'),
+  apply: z.boolean().optional().describe('false oder weggelassen: nur Vorschau. true: Vorschau übernehmen, erst nach Bestätigung.'),
+}
+
+export interface TrelloDeps {
+  trello: Trello
+  store: SyncStore
+  pairs: Pair[]
+  multicaWebUrl: string
+}
+
+function describePlan(plan: PullPlan): string {
+  return plan.items
+    .map((i) => `${i.issue ? i.issue.identifier : `Trello-Karte „${i.card.name}“`}: ${i.changes.join(', ')}.`)
+    .join(' ')
+}
+
+async function trelloPull(c: Ctx, t: TrelloDeps | undefined, a: z.infer<z.ZodObject<typeof trelloPullInput>>): Promise<string | { text: string; target: string }> {
+  if (!t) throw new Say('Die Trello-Spiegelung ist auf diesem Rechner nicht eingerichtet.')
+  const r = pickByName(t.pairs, a.project, (p) => p.projectName)
+  if (!r.ok) throw new Say(`Mit Trello gespiegelt ${t.pairs.length === 1 ? 'ist nur' : 'sind'} ${t.pairs.map((p) => p.projectName).join(', ')}.`)
+  const sync = new Sync({ api: () => c.api, trello: t.trello, store: t.store, pairs: t.pairs, multicaWebUrl: t.multicaWebUrl })
+  const plan = await sync.planPull(r.item, a.card)
+  const scope = a.card ? `Für ${a.card}` : `Im Projekt ${r.item.projectName}`
+  if (!plan.items.length) return `${scope} gibt es auf Trello nichts Neues.`
+  if (!a.apply) {
+    return `Vorschau, noch nichts übernommen. ${describePlan(plan)} Soll ich das übernehmen?`
+  }
+  const done = await sync.applyPull(plan)
+  return { text: `Aus Trello übernommen: ${done.join('. ')}.`, target: `${r.item.projectName}${a.card ? ` ${a.card}` : ''}` }
+}
+
+// ---------------------------------------------------------------------------------------------
 // Server
 // ---------------------------------------------------------------------------------------------
 
@@ -839,6 +881,8 @@ export interface ToolDeps {
   fetch: typeof fetch
   /** Multica rejected the session: drop the grant so the client logs in again. */
   onSessionExpired: (grantId: string) => void
+  /** Trello mirror; without it trello_pull says it is not set up. */
+  trello?: TrelloDeps
 }
 
 const RO = { readOnlyHint: true, openWorldHint: false } as const
@@ -1012,6 +1056,17 @@ export function buildMcpServer(deps: ToolDeps, who: Principal): McpServer {
       annotations: RO,
     },
     async () => run('system_status', false, {}, (c) => systemStatus(c)),
+  )
+  server.registerTool(
+    'trello_pull',
+    {
+      title: 'Änderungen aus Trello holen',
+      description:
+        'Holt neue Karten und Änderungen (Titel, Beschreibung, Liste, Fälligkeit, Kommentare) vom gespiegelten Trello-Board eines Projekts nach Multica. Läuft nie von selbst. Ohne apply nur Vorschau; erst nach Bestätigung mit apply true übernehmen. Neue Trello-Karten landen im Backlog ohne Zuständigen, es startet kein Agent.',
+      inputSchema: trelloPullInput,
+      annotations: WRITE,
+    },
+    async (a) => run('trello_pull', !!a.apply, a, (c) => trelloPull(c, deps.trello, a)),
   )
   server.registerTool(
     'list_projects',
