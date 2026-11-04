@@ -199,6 +199,30 @@ export class MulticaApi {
     return this.req('POST', `/api/issues/${issueId}/comments`, { content })
   }
 
+  /** Every comment of an issue, replies included, oldest first. */
+  async comments(issueId: string): Promise<Comment[]> {
+    const all = list<Comment & { replies?: Comment[] }>(await this.req('GET', `/api/issues/${issueId}/comments`), 'comments')
+    const flat = all.flatMap((c) => [c, ...(Array.isArray(c.replies) ? c.replies : [])])
+    return flat.sort((a, b) => a.created_at.localeCompare(b.created_at))
+  }
+
+  /** `base` is the text the edit started from; the server refuses the edit when the comment changed since. */
+  updateComment(commentId: string, content: string, base: string): Promise<Comment> {
+    return this.req('PUT', `/api/comments/${commentId}`, { content, content_base: base })
+  }
+
+  async labelsOf(issueId: string): Promise<Label[]> {
+    return list<Label>(await this.req('GET', `/api/issues/${issueId}/labels`), 'labels')
+  }
+
+  async attachLabel(issueId: string, labelId: string): Promise<void> {
+    await this.req('POST', `/api/issues/${issueId}/labels`, { label_id: labelId })
+  }
+
+  async detachLabel(issueId: string, labelId: string): Promise<void> {
+    await this.req('DELETE', `/api/issues/${issueId}/labels/${labelId}`)
+  }
+
   /** Every sub-issue of a parent, unpaged. */
   async children(issueId: string): Promise<Issue[]> {
     return list<Issue>(await this.req('GET', `/api/issues/${issueId}/children`), 'issues')
