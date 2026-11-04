@@ -422,6 +422,7 @@ export const updateIssueInput = {
   remove_labels: z.array(z.string().min(1).max(80)).max(10).optional().describe('Diese Labels entfernen'),
   parent: z.string().min(2).max(40).optional().describe('Neue Oberkarte (Kennung wie MS-2400), "keine" macht die Karte wieder eigenständig'),
   stage: z.number().int().min(0).max(50).optional().describe('Stufe unter der Oberkarte, 0 entfernt die Stufe'),
+  project: z.string().min(1).max(200).optional().describe('Projektname, in das die Karte verschoben wird, etwa "Drifter 999". Unterkarten wandern nicht mit.'),
 }
 
 /** "a", "a und b", "a, b und c". */
@@ -440,9 +441,9 @@ function replaceOnce(text: string, oldText: string, newText: string, where: stri
 const isConflict = (err: unknown) => err instanceof MulticaError && err.status === 409
 
 async function updateIssue(c: Ctx, a: z.infer<z.ZodObject<typeof updateIssueInput>>): Promise<{ text: string; target: string }> {
-  const fields = ['title', 'description', 'old_text', 'status', 'assignee', 'priority', 'labels', 'add_labels', 'remove_labels', 'parent', 'stage'] as const
+  const fields = ['title', 'description', 'old_text', 'status', 'assignee', 'priority', 'labels', 'add_labels', 'remove_labels', 'parent', 'stage', 'project'] as const
   if (!fields.some((f) => a[f] !== undefined)) {
-    throw new Say('Was soll sich ändern? Möglich sind Titel, Beschreibung, Status, Zuständiger, Priorität, Labels, Oberkarte und Stufe.')
+    throw new Say('Was soll sich ändern? Möglich sind Titel, Beschreibung, Status, Zuständiger, Priorität, Labels, Oberkarte, Stufe und Projekt.')
   }
   if (a.description !== undefined && a.old_text !== undefined) throw new Say('Entweder die ganze Beschreibung ersetzen oder eine Stelle darin, nicht beides.')
   if (a.old_text !== undefined && a.new_text === undefined) throw new Say(`Wodurch soll ${quote(a.old_text)} ersetzt werden?`)
@@ -451,13 +452,14 @@ async function updateIssue(c: Ctx, a: z.infer<z.ZodObject<typeof updateIssueInpu
 
   // Resolve everything first: a wrong name must not leave a half-changed card behind.
   const removeParent = a.parent !== undefined && NONE.has(norm(a.parent))
-  const [i, parent, people, wanted, added, removed] = await Promise.all([
+  const [i, parent, people, wanted, added, removed, project] = await Promise.all([
     loadIssue(c.api, a.issue),
     a.parent && !removeParent ? loadIssue(c.api, a.parent) : undefined,
     a.assignee && !NOBODY.has(norm(a.assignee)) ? loadPeople(c.api) : undefined,
     a.labels ? resolveLabels(c.api, a.labels) : undefined,
     resolveLabels(c.api, a.add_labels ?? []),
     resolveLabels(c.api, a.remove_labels ?? []),
+    a.project !== undefined ? resolveProject(c.api, a.project) : undefined,
   ])
   if (parent?.id === i.id) throw new Say('Eine Karte kann nicht ihre eigene Oberkarte sein.')
   if (a.stage && !parent && (removeParent || !i.parent_issue_id)) throw new Say(`${i.identifier} hat keine Oberkarte, eine Stufe gibt es nur darunter. Unter welcher Karte?`)
@@ -509,6 +511,14 @@ async function updateIssue(c: Ctx, a: z.infer<z.ZodObject<typeof updateIssueInpu
     body.stage = a.stage === 0 ? null : a.stage
     said.push(a.stage === 0 ? 'hat keine Stufe mehr' : `liegt in Stufe ${a.stage}`)
   }
+  // Moving a card leaves its sub-issues where they are (the server does not cascade),
+  // so the answer names the ones that stay behind.
+  let staying: Issue[] = []
+  if (project && project.id !== i.project_id) {
+    body.project_id = project.id
+    said.push(`liegt jetzt im Projekt ${project.title}`)
+    staying = (await c.api.children(i.id)).filter((k) => k.project_id !== project.id)
+  }
 
   let u = i
   if (Object.keys(body).length) {
@@ -538,7 +548,10 @@ async function updateIssue(c: Ctx, a: z.infer<z.ZodObject<typeof updateIssueInpu
     }
   }
   if (!said.length) return { text: `${u.identifier} ist schon so, es hat sich nichts geändert.`, target: u.identifier }
-  return { text: `${u.identifier} ${listDe(said)}.`, target: u.identifier }
+  const left = staying.length
+    ? ` ${staying.length === 1 ? 'Die Unterkarte' : 'Die Unterkarten'} ${ids(staying)} ${staying.length === 1 ? 'liegt' : 'liegen'} weiter im bisherigen Projekt.`
+    : ''
+  return { text: `${u.identifier} ${listDe(said)}.${left}`, target: u.identifier }
 }
 
 export const editCommentInput = {
@@ -617,11 +630,14 @@ export const bulkUpdateInput = {
     .describe('Statt einer Liste: alle offenen Unterkarten dieser Karte, etwa eine ganze Phase. Erledigte und abgebrochene bleiben unverändert.'),
   status: z.enum(STATUS).optional().describe('Neuer Status für alle. todo mit Agent startet je Karte einen Lauf.'),
   assignee: z.string().optional().describe('Neuer Zuständiger für alle (Name), "ich" für fl0w, "niemand" zum Entfernen'),
+  project: z.string().min(1).max(200).optional().describe('Projektname, in das alle verschoben werden'),
 }
 
 async function bulkUpdate(c: Ctx, a: z.infer<z.ZodObject<typeof bulkUpdateInput>>): Promise<{ text: string; target: string }> {
-  if (!a.status && !a.assignee) throw new Say('Was soll sich bei allen ändern, der Status oder der Zuständige?')
+  if (!a.status && !a.assignee && a.project === undefined) throw new Say('Was soll sich bei allen ändern, der Status, der Zuständige oder das Projekt?')
   if (!a.issues?.length && !a.parent) throw new Say('Welche Karten? Bitte Kennungen oder eine Oberkarte nennen.')
+  // Resolve the project first: a wrong name must not cost a round of card lookups.
+  const project = a.project !== undefined ? await resolveProject(c.api, a.project) : undefined
   let targets: Issue[]
   let skipped = 0
   if (a.parent) {
@@ -653,6 +669,10 @@ async function bulkUpdate(c: Ctx, a: z.infer<z.ZodObject<typeof bulkUpdateInput>
       if (who.type === 'agent') agent = who
       said.push(`bei ${who.name}`)
     }
+  }
+  if (project) {
+    updates.project_id = project.id
+    said.push(`im Projekt ${project.title}`)
   }
   const n = await c.api.batchUpdateIssues(
     targets.map((t) => t.id),
@@ -903,7 +923,7 @@ export function buildMcpServer(deps: ToolDeps, who: Principal): McpServer {
     {
       title: 'Karte ändern',
       description:
-        'Ändert Titel, Beschreibung, Status, Zuständigen, Priorität, Labels, Oberkarte (parent) oder Stufe einer Karte. Nicht genannte Felder bleiben, wie sie sind. Die Beschreibung wird ganz ersetzt (description) oder nur an einer Stelle (old_text, new_text). Tippfehler und falsche Namen hier korrigieren, die Karte nicht abbrechen und neu anlegen. Vorher die Änderung bestätigen lassen.',
+        'Ändert Titel, Beschreibung, Status, Zuständigen, Priorität, Labels, Oberkarte (parent), Stufe oder Projekt einer Karte. Mit project wird die Karte in ein anderes Projekt verschoben. Nicht genannte Felder bleiben, wie sie sind. Die Beschreibung wird ganz ersetzt (description) oder nur an einer Stelle (old_text, new_text). Tippfehler und falsche Namen hier korrigieren, die Karte nicht abbrechen und neu anlegen. Vorher die Änderung bestätigen lassen.',
       inputSchema: updateIssueInput,
       annotations: { ...WRITE, idempotentHint: true },
     },
@@ -935,7 +955,7 @@ export function buildMcpServer(deps: ToolDeps, who: Principal): McpServer {
     {
       title: 'Mehrere Karten auf einmal ändern',
       description:
-        'Setzt Status und/oder Zuständigen für mehrere Karten auf einmal: eine Liste von Kennungen oder alle offenen Unterkarten einer Oberkarte, etwa eine ganze Phase auf todo oder cancelled. Vorher die Karten und den neuen Stand bestätigen lassen.',
+        'Setzt Status, Zuständigen und/oder Projekt für mehrere Karten auf einmal: eine Liste von Kennungen oder alle offenen Unterkarten einer Oberkarte, etwa eine ganze Phase auf todo oder cancelled. Vorher die Karten und den neuen Stand bestätigen lassen.',
       inputSchema: bulkUpdateInput,
       annotations: { ...WRITE, idempotentHint: true },
     },
