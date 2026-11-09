@@ -33,9 +33,9 @@ export interface RunEnd {
 /**
  * After an agent run ends, read aloud only when the issue is done or blocked
  * (waiting on a person), or when the last comment closes with a decision for
- * the user, whatever status the issue landed on. A run that stops with the
- * issue still open and no decision, or hands off to another agent or person,
- * stays silent.
+ * the user while the issue is still open. A run that stops with the issue
+ * open and no decision, on a cancelled issue, or with a handoff to another
+ * agent or person stays silent.
  */
 export function decideRunEnd(run: RunEnd): AutoReadReason | null {
   if (run.hasActiveTask) return null;
