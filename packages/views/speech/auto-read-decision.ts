@@ -1,9 +1,10 @@
 import { issueColumnCategory } from "@multica/core/issues";
 import { parseMentions } from "@multica/core/issues/comment-trigger-outcomes";
 import type { Issue } from "@multica/core/types";
+import { decisionBlock } from "./speech-text";
 
 /** Why an agent answer is read aloud without being asked. */
-export type AutoReadReason = "mentioned" | "done" | "blocked";
+export type AutoReadReason = "mentioned" | "done" | "blocked" | "decision";
 
 /** Whether the comment mentions the current user, directly or through @all. */
 export function mentionsMe(markdown: string, myUserId: string | null): boolean {
@@ -31,8 +32,10 @@ export interface RunEnd {
 
 /**
  * After an agent run ends, read aloud only when the issue is done or blocked
- * (waiting on a person). A run that stops with the issue still open, fails,
- * or hands off to another agent or person stays silent.
+ * (waiting on a person), or when the last comment closes with a decision for
+ * the user, whatever status the issue landed on. A run that stops with the
+ * issue still open and no decision, or hands off to another agent or person,
+ * stays silent.
  */
 export function decideRunEnd(run: RunEnd): AutoReadReason | null {
   if (run.hasActiveTask) return null;
@@ -41,5 +44,6 @@ export function decideRunEnd(run: RunEnd): AutoReadReason | null {
   if (category === "done") return "done";
   if (category === "closed") return null;
   if (run.issue.status === "blocked") return "blocked";
+  if (run.lastComment && decisionBlock(run.lastComment)) return "decision";
   return null;
 }
