@@ -1404,6 +1404,7 @@
     "mentioned_on": "{{identifier}}：有人提到了你。",
     "done_on": "{{identifier}} 已完成。",
     "blocked_on": "{{identifier}} 已阻塞。",
+    "decision_on": "{{identifier}}：需要你做决定。",
     "stalled_on": "{{identifier}} 已停止。",
     "failed_on": "{{identifier}}：运行失败。",
     "now_reading": "正在朗读 {{identifier}}",
