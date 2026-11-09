@@ -68,6 +68,16 @@ describe("speech engine summaries", () => {
     expect(backend.summarize).not.toHaveBeenCalled();
   });
 
+  it("speaks a closing decision block as written, without summarizing", async () => {
+    const { backend, spoken } = fakeBackend("Short.");
+    const markdown = "Langer Bericht\n\n## Entscheidung\n\n**Zu entscheiden:** Welcher Kurs gilt?";
+    speak({ commentId: "c7", markdown, issue, prefix: "MUL-1 is blocked." });
+    await vi.waitFor(() =>
+      expect(spoken).toEqual(["MUL-1 is blocked. Entscheidung. Zu entscheiden: Welcher Kurs gilt?"]),
+    );
+    expect(backend.summarize).not.toHaveBeenCalled();
+  });
+
   it("summarizes each comment only once", async () => {
     const { backend, spoken } = fakeBackend("Short.");
     speak({ commentId: "c4", markdown: "Long answer", issue });
