@@ -5,7 +5,11 @@
 # Refresh the base: docker compose -f docker-compose.selfhost.yml build --pull postgres
 # Drop this file and go back to the upstream image once it ships a gosu built with a fixed Go.
 FROM pgvector/pgvector:pg17
-RUN rm -f /usr/local/bin/gosu
+# Debian point fixes land before the next upstream build (apt, libsasl2, tzdata on 2026-11-11).
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --no-install-recommends \
+ && rm -rf /var/lib/apt/lists/* \
+ && rm -f /usr/local/bin/gosu
 # A separate layer on purpose: Trivy drops a file from a lower layer only for a whiteout; a file
 # merely overwritten in the same layer keeps being reported (measured MS-3179).
 # The wrapper keeps the gosu command line used by docker-entrypoint.sh ("gosu postgres <cmd>")
