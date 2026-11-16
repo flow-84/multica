@@ -34,6 +34,10 @@ export async function catchUpMissedSlots(
       .sort((a, b) => b.due - a.due)[0]
     result.checked++
     if (!missed) continue
+    // The server skips a slot on purpose when the autopilot was paused at that
+    // time; resuming it later must not fire the skipped slot. A pause or resume
+    // bumps updated_at, while the backend outage this pass covers cannot.
+    if (Date.parse(ap.updated_at) > missed.due) continue
     // Any run since the slot (scheduled, manual, or an earlier catch-up)
     // means the slot is covered.
     const runs = await api.autopilotRuns(ap.id, 20)
