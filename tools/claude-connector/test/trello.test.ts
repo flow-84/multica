@@ -47,7 +47,9 @@ function fakeTrello() {
   const writes: string[] = []
   const f = (async (input: string | URL, init?: RequestInit) => {
     const u = new URL(String(input))
-    const q = Object.fromEntries(u.searchParams)
+    // Like api.trello.com: overlong URLs are refused before routing.
+    if (String(input).length > 8192) return new Response('<HTML>414 Request-URI Too Large', { status: 414 })
+    const q = { ...Object.fromEntries(u.searchParams), ...Object.fromEntries(new URLSearchParams(String(init?.body ?? ''))) }
     const m = init?.method ?? 'GET'
     const path = u.pathname.replace(/^\/1/, '')
     if (m !== 'GET') writes.push(`${m} ${path}`)
@@ -260,6 +262,20 @@ test('new Multica comments go to Trello once, pulled comments never go back', as
   const texts = t.cards[0].comments.map((c) => c.text)
   assert.equal(texts.length, 1)
   assert.match(texts[0], /^fl0w in Multica, \d\d\.\d\d\.\d{4}, \d\d:\d\d:\n\nNeu @Builder$/)
+})
+
+test('long comments and descriptions with umlauts reach Trello (no 414 from the URL, MS-3771)', async () => {
+  const { t, m, sync } = setup()
+  const long = 'Größenprüfung für Übergänge, äöü ß. '.repeat(400)
+  const i = m.add({ title: 'Lang', description: long })
+  await sync.pushIssue(i.id)
+  await new Promise((r) => setTimeout(r, 5))
+  await m.api.addComment(i.id, long)
+  await sync.pushIssue(i.id)
+  assert.equal(t.cards.length, 1)
+  assert.ok(t.cards[0].desc.startsWith('Größenprüfung'))
+  assert.equal(t.cards[0].comments.length, 1)
+  assert.ok(t.cards[0].comments[0].text.length > 14_000)
 })
 
 test('a card deleted on Trello is created again', async () => {

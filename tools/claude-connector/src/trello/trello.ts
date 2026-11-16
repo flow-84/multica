@@ -83,11 +83,18 @@ export class Trello {
 
   private async req<T>(method: string, path: string, params: Record<string, string | undefined> = {}): Promise<T> {
     const { key, token } = this.creds()
-    const q = new URLSearchParams({ key, token })
-    for (const [k, v] of Object.entries(params)) if (v !== undefined) q.set(k, v)
-    // Trello takes write parameters in the query string; bodies stay empty.
+    const auth = new URLSearchParams({ key, token })
+    const p = new URLSearchParams()
+    for (const [k, v] of Object.entries(params)) if (v !== undefined) p.set(k, v)
+    // Reads carry their parameters in the query string. Writes send them as a
+    // form body: a long comment or description in the URL hits Trello's URL
+    // length limit (HTTP 414, MS-3771).
+    const read = method === 'GET'
+    const url = `${this.base}${path}?${read ? new URLSearchParams([...auth, ...p]) : auth}`
+    const body = read ? undefined : p.toString()
+    const headers = read ? undefined : { 'content-type': 'application/x-www-form-urlencoded' }
     for (let attempt = 0; ; attempt++) {
-      const res = await this.f(`${this.base}${path}?${q}`, { method, signal: AbortSignal.timeout(20_000) })
+      const res = await this.f(url, { method, headers, body, signal: AbortSignal.timeout(20_000) })
       const text = await res.text()
       if (res.status === 429 && attempt < 3) {
         await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)))
