@@ -31,6 +31,10 @@ TS_LABEL=com.fl0w.multica-trello-sync
 TS_PLIST="$HOME/Library/LaunchAgents/$TS_LABEL.plist"
 TS_STATE="$HOME/.local/state/multica-trello-sync"
 WD_PLIST="$HOME/Library/LaunchAgents/$WD_LABEL.plist"
+# Catch-up for autopilot slots the server dropped during an outage (MS-3771).
+AC_LABEL=com.fl0w.multica-autopilot-catchup
+AC_PLIST="$HOME/Library/LaunchAgents/$AC_LABEL.plist"
+AC_STATE="$HOME/.local/state/multica-autopilot-catchup"
 
 mkdir -p "$APP" "$STATE"
 rsync -a --delete "$SRC/src" "$SRC/package.json" "$SRC/package-lock.json" "$SRC/trello-sync.json" "$APP/"
@@ -207,6 +211,41 @@ cat >"$TS_PLIST" <<PLIST
 </plist>
 PLIST
 load "$TS_LABEL" "$TS_PLIST"
+
+mkdir -p "$AC_STATE"
+cat >"$AC_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>$AC_LABEL</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>$NODE</string>
+		<string>$APP/src/autopilot-catchup-main.ts</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>MULTICA_API_URL</key>
+		<string>http://localhost:8080</string>
+		<key>MULTICA_WORKSPACE_ID</key>
+		<string>50b08bfb-a5fe-426f-b012-5da67a25d153</string>
+	</dict>
+	<key>StartInterval</key>
+	<integer>600</integer>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>WorkingDirectory</key>
+	<string>$APP</string>
+	<key>StandardOutPath</key>
+	<string>$AC_STATE/catchup.log</string>
+	<key>StandardErrorPath</key>
+	<string>$AC_STATE/catchup.log</string>
+</dict>
+</plist>
+PLIST
+load "$AC_LABEL" "$AC_PLIST"
 
 for _ in $(seq 1 20); do
   curl -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1 && break
