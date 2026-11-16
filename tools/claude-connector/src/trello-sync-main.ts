@@ -99,7 +99,7 @@ function connect(): void {
       return
     }
     if (!authed) {
-      if (f.type === 'auth_ack' || f.type === 'auth_ok' || !f.type.startsWith('auth')) {
+      if (f.type === 'auth_ack' || f.type === 'auth_ok' || !f.type?.startsWith('auth')) {
         authed = true
         backoff = 1_000
         log('ws: verbunden')

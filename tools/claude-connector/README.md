@@ -55,6 +55,10 @@ Projekte aus `trello-sync.json` werden auf ein Trello-Board gespiegelt. Erstes P
 - Zugang: Trello aus `~/.secrets/trello-crm.env` (Konto msx100), Multica mit dem Token des CLI-Profils `desktop-localhost-8080`. Beides wird bei jedem Zugriff gelesen, nichts liegt im Repo oder in der Plist.
 - Neustart: `launchctl kickstart -k gui/$UID/com.fl0w.multica-trello-sync`
 
+## Autopiloten nachholen (MS-3771)
+
+Der Server startet einen geplanten Autopilot-Lauf nur bis fünf Minuten nach der Uhrzeit. War das Backend zu der Zeit nicht erreichbar (09.11.2026, 01:45 bis 07:05 UTC), fällt der Lauf aus, bei Wochen-Autopiloten also eine ganze Woche. Der LaunchAgent `com.fl0w.multica-autopilot-catchup` prüft alle 10 Minuten jeden aktiven Autopiloten: Liegt der nächste geplante Lauf 15 Minuten bis 24 Stunden zurück und gibt es seitdem keinen Lauf, startet er den Autopiloten einmal (Idempotency-Key je Trigger und Slot). Log: `~/.local/state/multica-autopilot-catchup/catchup.log`. Trockenlauf: `AUTOPILOT_CATCHUP_DRY_RUN=1 MULTICA_WORKSPACE_ID=… node src/autopilot-catchup-main.ts`.
+
 ## Beispielsätze
 
 - „Was ist im Projekt CRM gerade offen?“

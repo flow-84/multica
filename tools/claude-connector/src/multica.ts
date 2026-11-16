@@ -126,13 +126,14 @@ export class MulticaApi {
     this.token = token
   }
 
-  private req<T>(method: string, path: string, body?: unknown): Promise<T> {
+  private req<T>(method: string, path: string, body?: unknown, extra: Record<string, string> = {}): Promise<T> {
     return call<T>(this.f, `${this.baseUrl}${path}`, {
       method,
       headers: {
         authorization: `Bearer ${this.token}`,
         'x-workspace-id': this.workspaceId,
         ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+        ...extra,
       },
       body: body === undefined ? undefined : JSON.stringify(body),
     })
@@ -285,4 +286,40 @@ export class MulticaApi {
   updateProject(id: string, body: Record<string, unknown>): Promise<Project> {
     return this.req('PUT', `/api/projects/${id}`, body)
   }
+
+  async activeAutopilots(): Promise<Autopilot[]> {
+    return list<Autopilot>(await this.req('GET', '/api/autopilots?status=active'), 'autopilots')
+  }
+
+  async autopilotTriggers(id: string): Promise<AutopilotTrigger[]> {
+    return list<AutopilotTrigger>(await this.req('GET', `/api/autopilots/${id}`), 'triggers')
+  }
+
+  async autopilotRuns(id: string, limit: number): Promise<AutopilotRun[]> {
+    return list<AutopilotRun>(await this.req('GET', `/api/autopilots/${id}/runs?limit=${limit}`), 'runs')
+  }
+
+  /** "Run now"; the server dedupes repeated calls with the same key. */
+  triggerAutopilot(id: string, idempotencyKey: string): Promise<AutopilotRun> {
+    return this.req('POST', `/api/autopilots/${id}/trigger`, undefined, { 'idempotency-key': idempotencyKey })
+  }
+}
+
+export interface Autopilot {
+  id: string
+  title: string
+  status: string
+}
+
+export interface AutopilotTrigger {
+  id: string
+  kind: string
+  enabled: boolean
+  next_run_at: string | null
+}
+
+export interface AutopilotRun {
+  id: string
+  created_at: string
+  source: string
 }
