@@ -52,6 +52,11 @@ describe('mehr als eine Seite', () => {
     assert.match(r.text, /MS-5: Uralt/)
   })
 
+  it('zählt im Zeitraum exakt, wenn die Seite hinter dem Zeitraum liegt', async () => {
+    const r = await callTool(client, 'list_issues', { days: 7, limit: 2, page: 3 })
+    assert.equal(r.text, '3 Issues offen aus den letzten 7 Tagen. Seite 3 ist leer.')
+  })
+
   it('sagt mindestens, wenn die volle Seite ganz im Zeitraum liegt', async () => {
     const r = await callTool(client, 'list_issues', { days: 30 })
     assert.match(r.text, /^Mindestens 100 Issues offen aus den letzten 30 Tagen/)

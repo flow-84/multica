@@ -1,6 +1,6 @@
 import { useSpeechStore } from "@multica/core/speech";
 import type { Issue } from "@multica/core/types";
-import { markdownToSpeech } from "./speech-text";
+import { decisionBlock, markdownToSpeech } from "./speech-text";
 
 /** What a summarizer gets to condense one agent answer into a few sentences. */
 export interface SummaryInput {
@@ -129,13 +129,17 @@ let generation = 0;
 const SKIP = "SKIP";
 
 /**
- * The text to speak, or null for silence. Auto-read requests carry a prefix:
+ * The text to speak, or null for silence. A closing decision block is spoken
+ * as written instead of a summary. Auto-read requests carry a prefix:
  * for them a SKIP stays silent and a failed summary speaks only the prefix,
  * never the full comment. A manual read without prefix falls back to it.
  */
 async function spokenText(b: SpeechBackend, req: SpeechRequest): Promise<string | null> {
   const full = markdownToSpeech(req.markdown);
   if (!b.summarize || !req.issue || !useSpeechStore.getState().summarize) return full;
+  // The agent already wrote what is to be heard; a summary could only lose it.
+  const decision = decisionBlock(req.markdown);
+  if (decision) return markdownToSpeech(decision);
   const cached = summaries.get(req.commentId);
   if (cached) return cached === SKIP ? (req.prefix ? null : full) : cached;
   const summary = await b

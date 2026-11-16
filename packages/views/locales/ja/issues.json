@@ -1404,6 +1404,7 @@
     "mentioned_on": "{{identifier}}: あなたがメンションされました。",
     "done_on": "{{identifier}} は完了しました。",
     "blocked_on": "{{identifier}} はブロックされています。",
+    "decision_on": "{{identifier}}: 判断が必要です。",
     "stalled_on": "{{identifier}} は停止しました。",
     "failed_on": "{{identifier}}: 実行が失敗しました。",
     "now_reading": "{{identifier}} を読み上げ中",

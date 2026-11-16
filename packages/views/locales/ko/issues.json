@@ -1404,6 +1404,7 @@
     "mentioned_on": "{{identifier}}: 회원님이 멘션되었습니다.",
     "done_on": "{{identifier}} 완료.",
     "blocked_on": "{{identifier}} 차단됨.",
+    "decision_on": "{{identifier}}: 결정이 필요합니다.",
     "stalled_on": "{{identifier}} 진행이 멈췄습니다.",
     "failed_on": "{{identifier}}: 실행에 실패했습니다.",
     "now_reading": "{{identifier}} 읽는 중",
