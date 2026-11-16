@@ -6,10 +6,10 @@ import type { AutopilotRun, AutopilotTrigger } from '../src/multica.ts'
 
 const NOW = new Date('2026-11-09T07:20:00Z')
 
-function fake(triggers: AutopilotTrigger[], runs: AutopilotRun[]) {
+function fake(triggers: AutopilotTrigger[], runs: AutopilotRun[], updatedAt = '2026-11-02T07:00:05Z') {
   const started: { id: string; key: string }[] = []
   const api = {
-    activeAutopilots: async () => [{ id: 'ap1', title: 'SEO-Wochenreport', status: 'active' }],
+    activeAutopilots: async () => [{ id: 'ap1', title: 'SEO-Wochenreport', status: 'active', updated_at: updatedAt }],
     autopilotTriggers: async () => triggers,
     autopilotRuns: async () => runs,
     triggerAutopilot: async (id: string, key: string) => {
@@ -37,6 +37,12 @@ test('a slot dropped during an outage is started once, with a stable idempotency
 
 test('a slot with a run since then is left alone', async () => {
   const { api, started } = fake([sched('2026-11-09T07:00:00Z')], [{ id: 'r', created_at: '2026-11-09T07:16:00Z', source: 'manual' }])
+  await catchUpMissedSlots(api, NOW, () => {})
+  assert.equal(started.length, 0)
+})
+
+test('an autopilot paused across the slot and resumed later is not caught up', async () => {
+  const { api, started } = fake([sched('2026-11-09T07:00:00Z')], [], '2026-11-09T07:12:00Z')
   await catchUpMissedSlots(api, NOW, () => {})
   assert.equal(started.length, 0)
 })

@@ -309,6 +309,7 @@ export interface Autopilot {
   id: string
   title: string
   status: string
+  updated_at: string
 }
 
 export interface AutopilotTrigger {
