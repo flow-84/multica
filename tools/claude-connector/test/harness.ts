@@ -41,6 +41,12 @@ export interface FakeMultica {
   dbDown: boolean
   /** When true every API call answers 401, as after an expired session. */
   expired: boolean
+  /** Comments of MS-1, the only issue with comments. */
+  comments: { id: string; author_type: string; author_id: string; content: string; created_at: string }[]
+  /** Label ids per issue id. */
+  issueLabels: Map<string, string[]>
+  /** When true text edits answer 409, as when the card or comment changed elsewhere meanwhile. */
+  editConflict: boolean
 }
 
 export function fakeIssue(n: number, o: Partial<Issue>): Issue {
@@ -75,6 +81,9 @@ export async function startFakeMultica(): Promise<FakeMultica> {
     expired: false,
     wakeupsFail: false,
     dbDown: false,
+    comments: [],
+    issueLabels: new Map(),
+    editConflict: false,
     projects: [
       { id: P_MULTICA, title: 'Multica', status: 'planned' },
       { id: P_CRM, title: 'CRM (m2s)', status: 'in_progress' },
@@ -93,9 +102,14 @@ export async function startFakeMultica(): Promise<FakeMultica> {
       fakeIssue(4, { title: 'CRM-Export', status: 'todo', project_id: P_CRM }),
     ],
   }
-  const comments = [
-    { id: 'c1', author_type: 'member', author_id: FLOW, content: 'Bitte mit **OAuth**.', created_at: iso(5 * HOUR) },
-    { id: 'c2', author_type: 'agent', author_id: CLAUDE, content: 'Ich baue das jetzt.', created_at: iso(1 * HOUR) },
+  state.comments = [
+    { id: 'c1aaaaaa-0000-0000-0000-000000000001', author_type: 'member', author_id: FLOW, content: 'Bitte mit **OAuth**.', created_at: iso(5 * HOUR) },
+    { id: 'c2bbbbbb-0000-0000-0000-000000000002', author_type: 'agent', author_id: CLAUDE, content: 'Ich baue das jetzt.', created_at: iso(1 * HOUR) },
+  ]
+  const labels = [
+    { id: 'l-m2s', name: 'bereich/Model to Star' },
+    { id: 'l-mvm', name: 'bereich/Multiversemedia' },
+    { id: 'l-bill', name: 'Abrechnung' },
   ]
   let next = 100
 
@@ -140,12 +154,17 @@ export async function startFakeMultica(): Promise<FakeMultica> {
         return send(200, project)
       }
     }
-    if (req.method === 'GET' && p === '/api/labels') {
-      return send(200, [
-        { id: 'l-m2s', name: 'bereich/Model to Star' },
-        { id: 'l-mvm', name: 'bereich/Multiversemedia' },
-        { id: 'l-bill', name: 'Abrechnung' },
-      ])
+    if (req.method === 'GET' && p === '/api/labels') return send(200, labels)
+    const cm = /^\/api\/comments\/([^/]+)$/.exec(p)
+    if (cm && req.method === 'PUT') {
+      const comment = state.comments.find((c) => c.id === cm[1])
+      if (!comment) return send(404, { error: 'comment not found' })
+      const b = await body(req)
+      state.writes.push({ method: 'PUT', path: p, body: b })
+      // Like the server: a stale base is an edit conflict.
+      if (state.editConflict || (typeof b.content_base === 'string' && b.content_base !== comment.content)) return send(409, { error: 'edit conflict' })
+      comment.content = String(b.content)
+      return send(200, comment)
     }
     if (req.method === 'POST' && p === '/api/issues/batch-update') {
       const b = (await body(req)) as { issue_ids: string[]; updates: Record<string, unknown> }
@@ -203,6 +222,24 @@ export async function startFakeMultica(): Promise<FakeMultica> {
       state.issues.push(i)
       return send(201, i)
     }
+    const lm = /^\/api\/issues\/([^/]+)\/labels(?:\/([^/]+))?$/.exec(p)
+    if (lm) {
+      const issue = state.issues.find((i) => i.id === lm[1])
+      if (!issue) return send(404, { error: 'issue not found' })
+      const have = state.issueLabels.get(issue.id) ?? []
+      if (req.method === 'GET') return send(200, { labels: labels.filter((l) => have.includes(l.id)), issue_revision: 1 })
+      if (req.method === 'POST') {
+        const b = await body(req)
+        state.writes.push({ method: 'POST', path: p, body: b })
+        state.issueLabels.set(issue.id, [...new Set([...have, String(b.label_id)])])
+        return send(200, {})
+      }
+      if (req.method === 'DELETE' && lm[2]) {
+        state.writes.push({ method: 'DELETE', path: p, body: null })
+        state.issueLabels.set(issue.id, have.filter((id) => id !== lm[2]))
+        return send(200, {})
+      }
+    }
     const m = /^\/api\/issues\/([^/]+)(\/comments|\/children|\/wakeups)?$/.exec(p)
     if (m) {
       if (state.dbDown) return send(404, { error: 'workspace not found' })
@@ -216,7 +253,7 @@ export async function startFakeMultica(): Promise<FakeMultica> {
         state.writes.push({ method: 'POST', path: p, body: b })
         return send(201, { id: `w-${next++}` })
       }
-      if (m[2] === '/comments' && req.method === 'GET') return send(200, issue.identifier === 'MS-1' ? comments : [])
+      if (m[2] === '/comments' && req.method === 'GET') return send(200, issue.identifier === 'MS-1' ? state.comments : [])
       if (m[2] === '/comments' && req.method === 'POST') {
         const b = await body(req)
         state.writes.push({ method: 'POST', path: p, body: b })
@@ -225,8 +262,10 @@ export async function startFakeMultica(): Promise<FakeMultica> {
       if (req.method === 'GET') return send(200, issue)
       if (req.method === 'PUT') {
         const b = await body(req)
+        if (state.editConflict && ('title_base' in b || 'description_base' in b)) return send(409, { error: 'edit conflict' })
         state.writes.push({ method: 'PUT', path: p, body: b })
-        Object.assign(issue, b, { updated_at: iso(0) })
+        const { title_base: _t, description_base: _d, ...fields } = b
+        Object.assign(issue, fields, { updated_at: iso(0) })
         return send(200, issue)
       }
     }

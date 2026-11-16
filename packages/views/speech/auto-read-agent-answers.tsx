@@ -32,6 +32,7 @@ const PREFIX_KEYS = {
   mentioned: "mentioned_on",
   done: "done_on",
   blocked: "blocked_on",
+  decision: "decision_on",
 } as const satisfies Record<AutoReadReason, string>;
 
 function myUserId(): string | null {
@@ -40,10 +41,10 @@ function myUserId(): string | null {
 
 /**
  * While the read-aloud preference is on, speaks an agent answer only when it
- * mentions the user or when a run ends with the issue done or blocked.
- * Everything else, including handoffs and runs that stop with the issue still
- * open, stays silent. Queued, so answers never interrupt each
- * other.
+ * mentions the user or when a run ends with the issue done or blocked or with
+ * a closing decision for the user. Everything else, including handoffs and runs
+ * that stop with the issue still open, stays silent. Queued, so answers never
+ * interrupt each other.
  */
 export function AutoReadAgentAnswers() {
   const wsId = useWorkspaceId();

@@ -1,0 +1,18 @@
+{
+  "multicaWebUrl": "https://macbook-air-von-fl0w.taildc41c0.ts.net/m2s",
+  "pairs": [
+    {
+      "projectId": "1a1103de-c928-486b-b0ed-d730b6d0e550",
+      "projectName": "Drifter 999",
+      "board": "zTDfk3TC",
+      "lists": {
+        "backlog": "Backlog",
+        "todo": "To-Do",
+        "in_progress": "In Arbeit",
+        "in_review": "Review / Marketing",
+        "done": "Erledigt",
+        "blocked": "Blockiert"
+      }
+    }
+  ]
+}

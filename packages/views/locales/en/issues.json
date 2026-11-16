@@ -1451,6 +1451,7 @@
     "mentioned_on": "{{identifier}}: you were mentioned.",
     "done_on": "{{identifier}} is done.",
     "blocked_on": "{{identifier}} is blocked.",
+    "decision_on": "{{identifier}}: a decision is needed.",
     "stalled_on": "{{identifier}} has stopped.",
     "failed_on": "{{identifier}}: the run failed.",
     "now_reading": "Reading {{identifier}}",

@@ -10,6 +10,19 @@ const meMention = `[@fl0w](mention://member/${ME})`;
 const otherMention = `[@Ana](mention://member/${OTHER})`;
 const agentMention = `[@Reviewer](mention://agent/${AGENT})`;
 const issueLink = `[@MS-7](mention://issue/${AGENT})`;
+const withDecision = `Fertig.
+
+## Entscheidung
+
+**Worum es geht:** Die Prüfung ist abgeschlossen.
+
+**Zu entscheiden:** Soll der Stand live gehen?
+
+**Empfehlung:** Ja, weil alle Tests grün sind.
+
+**Option A (empfohlen):** Der Stand geht heute live.
+
+**Option B:** Der Stand wartet bis morgen.`;
 
 function run(overrides: Partial<RunEnd> = {}): RunEnd {
   return {
@@ -79,5 +92,35 @@ describe("decideRunEnd", () => {
 
   it("stays silent on a cancelled issue", () => {
     expect(decideRunEnd(run({ issue: { status: "cancelled" } }))).toBeNull();
+  });
+
+  it("reads a closing decision on an issue still open", () => {
+    expect(decideRunEnd(run({ issue: { status: "in_review" }, lastComment: withDecision }))).toBe("decision");
+    expect(decideRunEnd(run({ lastComment: withDecision }))).toBe("decision");
+  });
+
+  it("stays silent on in_review without a decision", () => {
+    expect(decideRunEnd(run({ issue: { status: "in_review" } }))).toBeNull();
+  });
+
+  it("keeps the status reason when the issue is done or blocked", () => {
+    expect(decideRunEnd(run({ issue: { status: "done" }, lastComment: withDecision }))).toBe("done");
+    expect(decideRunEnd(run({ issue: { status: "blocked" }, lastComment: withDecision }))).toBe("blocked");
+  });
+
+  it("stays silent on a decision when the issue is cancelled", () => {
+    expect(decideRunEnd(run({ issue: { status: "cancelled" }, lastComment: withDecision }))).toBeNull();
+  });
+
+  it("stays silent on a decision that hands off to an agent", () => {
+    expect(
+      decideRunEnd(run({ issue: { status: "in_review" }, lastComment: `${agentMention} bitte prüfen.\n\n${withDecision}` })),
+    ).toBeNull();
+  });
+
+  it("stays silent on a decision while another run continues", () => {
+    expect(
+      decideRunEnd(run({ issue: { status: "in_review" }, lastComment: withDecision, hasActiveTask: true })),
+    ).toBeNull();
   });
 });

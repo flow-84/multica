@@ -169,11 +169,13 @@ describe('Token', () => {
       'bulk_update_issues',
       'create_issue',
       'create_project',
+      'edit_comment',
       'get_issue',
       'get_project',
       'list_issues',
       'list_projects',
       'system_status',
+      'trello_pull',
       'update_issue',
       'update_project',
     ])
