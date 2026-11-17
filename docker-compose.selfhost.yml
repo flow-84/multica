@@ -224,7 +224,15 @@ services:
     restart: unless-stopped
 
   frontend:
-    image: ${MULTICA_WEB_IMAGE:-ghcr.io/multica-ai/multica-web}:${MULTICA_IMAGE_TAG:-latest}
+    # Built locally from the official web image without npm/npx/corepack/yarn (MS-3002).
+    # `pull` skips it, `up` builds it only when missing; refresh the base after every pull with
+    # `docker compose -f docker-compose.selfhost.yml build --pull frontend` (make selfhost does).
+    image: multica-web:local
+    build:
+      context: ./docker/web
+      args:
+        BASE_IMAGE: ${MULTICA_WEB_IMAGE:-ghcr.io/multica-ai/multica-web}:${MULTICA_IMAGE_TAG:-latest}
+    pull_policy: never
     depends_on:
       - backend
     ports:
