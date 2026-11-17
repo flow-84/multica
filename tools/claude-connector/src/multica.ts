@@ -1,5 +1,6 @@
 // Thin client for the Multica HTTP API (the same endpoints the `multica` CLI
 // uses). Calls run as fl0w with the session token of the OAuth grant.
+import { withNetRetry } from './net-retry.ts'
 
 export class MulticaError extends Error {
   readonly status: number
@@ -21,6 +22,7 @@ export interface Issue {
   project_id: string | null
   parent_issue_id?: string | null
   stage?: number | null
+  due_date?: string | null
   created_at: string
   updated_at: string
 }
@@ -70,8 +72,10 @@ export interface Comment {
 type Fetch = typeof fetch
 
 async function call<T>(f: Fetch, url: string, init: RequestInit): Promise<T> {
-  const res = await f(url, { ...init, signal: AbortSignal.timeout(15_000) })
-  const text = await res.text()
+  const { res, text } = await withNetRetry(init.method ?? 'GET', async () => {
+    const res = await f(url, { ...init, signal: AbortSignal.timeout(15_000) })
+    return { res, text: await res.text() }
+  })
   if (!res.ok) {
     let msg = text.slice(0, 300)
     try {
@@ -125,13 +129,14 @@ export class MulticaApi {
     this.token = token
   }
 
-  private req<T>(method: string, path: string, body?: unknown): Promise<T> {
+  private req<T>(method: string, path: string, body?: unknown, extra: Record<string, string> = {}): Promise<T> {
     return call<T>(this.f, `${this.baseUrl}${path}`, {
       method,
       headers: {
         authorization: `Bearer ${this.token}`,
         'x-workspace-id': this.workspaceId,
         ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+        ...extra,
       },
       body: body === undefined ? undefined : JSON.stringify(body),
     })
@@ -195,8 +200,56 @@ export class MulticaApi {
     return this.req('PUT', `/api/issues/${issueId}`, body)
   }
 
+  /** Every comment (replies included) created at or after `since`, oldest first. */
+  async commentsSince(issueId: string, since: string): Promise<Comment[]> {
+    const all = list<Comment & { replies?: Comment[] }>(
+      await this.req('GET', `/api/issues/${issueId}/comments?since=${encodeURIComponent(since)}`),
+      'comments',
+    )
+    const flat = all.flatMap((c) => [c, ...(Array.isArray(c.replies) ? c.replies : [])])
+    const seen = new Set<string>()
+    return flat
+      .filter((c) => !seen.has(c.id) && seen.add(c.id) && c.created_at >= since)
+      .sort((a, b) => a.created_at.localeCompare(b.created_at))
+  }
+
+  /** All issues of a project in every status, paged through. */
+  async projectIssues(projectId: string): Promise<Issue[]> {
+    const out: Issue[] = []
+    const statuses = ['backlog', 'todo', 'in_progress', 'in_review', 'done', 'blocked', 'cancelled']
+    for (let offset = 0; ; offset += 100) {
+      const { issues, total } = await this.listIssues({ projectId, statuses, limit: 100, offset })
+      out.push(...issues)
+      if (!issues.length || out.length >= total) return out
+    }
+  }
+
   addComment(issueId: string, content: string): Promise<Comment> {
     return this.req('POST', `/api/issues/${issueId}/comments`, { content })
+  }
+
+  /** Every comment of an issue, replies included, oldest first. */
+  async comments(issueId: string): Promise<Comment[]> {
+    const all = list<Comment & { replies?: Comment[] }>(await this.req('GET', `/api/issues/${issueId}/comments`), 'comments')
+    const flat = all.flatMap((c) => [c, ...(Array.isArray(c.replies) ? c.replies : [])])
+    return flat.sort((a, b) => a.created_at.localeCompare(b.created_at))
+  }
+
+  /** `base` is the text the edit started from; the server refuses the edit when the comment changed since. */
+  updateComment(commentId: string, content: string, base: string): Promise<Comment> {
+    return this.req('PUT', `/api/comments/${commentId}`, { content, content_base: base })
+  }
+
+  async labelsOf(issueId: string): Promise<Label[]> {
+    return list<Label>(await this.req('GET', `/api/issues/${issueId}/labels`), 'labels')
+  }
+
+  async attachLabel(issueId: string, labelId: string): Promise<void> {
+    await this.req('POST', `/api/issues/${issueId}/labels`, { label_id: labelId })
+  }
+
+  async detachLabel(issueId: string, labelId: string): Promise<void> {
+    await this.req('DELETE', `/api/issues/${issueId}/labels/${labelId}`)
   }
 
   /** Every sub-issue of a parent, unpaged. */
@@ -236,4 +289,41 @@ export class MulticaApi {
   updateProject(id: string, body: Record<string, unknown>): Promise<Project> {
     return this.req('PUT', `/api/projects/${id}`, body)
   }
+
+  async activeAutopilots(): Promise<Autopilot[]> {
+    return list<Autopilot>(await this.req('GET', '/api/autopilots?status=active'), 'autopilots')
+  }
+
+  async autopilotTriggers(id: string): Promise<AutopilotTrigger[]> {
+    return list<AutopilotTrigger>(await this.req('GET', `/api/autopilots/${id}`), 'triggers')
+  }
+
+  async autopilotRuns(id: string, limit: number): Promise<AutopilotRun[]> {
+    return list<AutopilotRun>(await this.req('GET', `/api/autopilots/${id}/runs?limit=${limit}`), 'runs')
+  }
+
+  /** "Run now"; the server dedupes repeated calls with the same key. */
+  triggerAutopilot(id: string, idempotencyKey: string): Promise<AutopilotRun> {
+    return this.req('POST', `/api/autopilots/${id}/trigger`, undefined, { 'idempotency-key': idempotencyKey })
+  }
+}
+
+export interface Autopilot {
+  id: string
+  title: string
+  status: string
+  updated_at: string
+}
+
+export interface AutopilotTrigger {
+  id: string
+  kind: string
+  enabled: boolean
+  next_run_at: string | null
+}
+
+export interface AutopilotRun {
+  id: string
+  created_at: string
+  source: string
 }
