@@ -2,6 +2,7 @@
 // come from the existing secrets file (~/.secrets/trello-crm.env, account
 // msx100) and are read at call time, never stored in the repo or a plist.
 import { readFileSync } from 'node:fs'
+import { withNetRetry } from '../net-retry.ts'
 
 export interface TrelloCreds {
   key: string
@@ -94,8 +95,10 @@ export class Trello {
     const body = read ? undefined : p.toString()
     const headers = read ? undefined : { 'content-type': 'application/x-www-form-urlencoded' }
     for (let attempt = 0; ; attempt++) {
-      const res = await this.f(url, { method, headers, body, signal: AbortSignal.timeout(20_000) })
-      const text = await res.text()
+      const { res, text } = await withNetRetry(method, async () => {
+        const res = await this.f(url, { method, headers, body, signal: AbortSignal.timeout(20_000) })
+        return { res, text: await res.text() }
+      })
       if (res.status === 429 && attempt < 3) {
         await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)))
         continue

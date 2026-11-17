@@ -1188,12 +1188,34 @@ func (d *Daemon) healAgentPath(ctx context.Context, provider, command string) he
 	return d.adoptAgentPath(ctx, provider, command, newPath, "re-resolved after pinned path vanished")
 }
 
+// healVersionRetryDelays are the pauses between `--version` probes of a
+// re-resolved binary. The binary is new to this host, so each probe gets the
+// first-launch allowance (macOS assesses a quarantined Cask binary on its
+// first run), and a probe that still fails is repeated once before the heal
+// gives up and the task launch fails (MS-3886). A test sets them to zero.
+var healVersionRetryDelays = []time.Duration{5 * time.Second}
+
+func detectHealedAgentVersion(ctx context.Context, path string) (string, error) {
+	probeCtx := agent.WithFirstLaunchProbe(ctx)
+	for i := 0; ; i++ {
+		version, err := detectAgentVersion(probeCtx, agent.Command{Path: path})
+		if err == nil || i >= len(healVersionRetryDelays) {
+			return version, err
+		}
+		select {
+		case <-ctx.Done():
+			return version, err
+		case <-time.After(healVersionRetryDelays[i]):
+		}
+	}
+}
+
 func (d *Daemon) adoptAgentPath(ctx context.Context, provider, command, newPath, reason string) healOutcome {
 	// Verify before adopting. An in-place "upgrade" that actually repoints at an
 	// older or broken install must not be launched under the daemon's stale
 	// version policy, and must not slip past the minimum-version gate that the
 	// registration path applies (MUL-4486 review).
-	version, err := detectAgentVersion(ctx, agent.Command{Path: newPath})
+	version, err := detectHealedAgentVersion(ctx, newPath)
 	if err != nil {
 		d.logger.Warn("re-resolved agent executable failed version detection; keeping pinned path",
 			"provider", provider, "command", command, "new_path", newPath, "error", err)

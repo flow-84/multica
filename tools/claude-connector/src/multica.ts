@@ -1,5 +1,6 @@
 // Thin client for the Multica HTTP API (the same endpoints the `multica` CLI
 // uses). Calls run as fl0w with the session token of the OAuth grant.
+import { withNetRetry } from './net-retry.ts'
 
 export class MulticaError extends Error {
   readonly status: number
@@ -71,8 +72,10 @@ export interface Comment {
 type Fetch = typeof fetch
 
 async function call<T>(f: Fetch, url: string, init: RequestInit): Promise<T> {
-  const res = await f(url, { ...init, signal: AbortSignal.timeout(15_000) })
-  const text = await res.text()
+  const { res, text } = await withNetRetry(init.method ?? 'GET', async () => {
+    const res = await f(url, { ...init, signal: AbortSignal.timeout(15_000) })
+    return { res, text: await res.text() }
+  })
   if (!res.ok) {
     let msg = text.slice(0, 300)
     try {
