@@ -108,6 +108,8 @@ selfhost: ## Create .env if needed, then pull and start the official self-hosted
 		echo "  make selfhost-build"; \
 		exit 1; \
 	fi
+	@echo "==> Rebuilding the web image on the pulled base (npm removed, MS-3002)..."
+	$(COMPOSE) -f docker-compose.selfhost.yml build --pull frontend
 	@echo "==> Starting Multica via Docker Compose..."
 	$(COMPOSE) -f docker-compose.selfhost.yml up -d
 	@bash scripts/selfhost-wait.sh official
