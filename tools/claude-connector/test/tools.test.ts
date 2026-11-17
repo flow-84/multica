@@ -201,3 +201,13 @@ describe('Sprachhelfer', () => {
     assert.equal(speakable('Erster Satz ist da. Zweiter Satz ist viel zu lang für die Grenze.', 30), 'Erster Satz ist da.')
   })
 })
+
+describe('trello_pull', () => {
+  it('sagt ohne eingerichtete Spiegelung, dass sie fehlt, und ändert nichts', async () => {
+    const before = h.fake.writes.length
+    const r = await callTool(client, 'trello_pull', { project: 'Drifter 999' })
+    assert.equal(r.isError, true)
+    assert.match(r.text, /Trello-Spiegelung ist auf diesem Rechner nicht eingerichtet/)
+    assert.equal(h.fake.writes.length, before)
+  })
+})
