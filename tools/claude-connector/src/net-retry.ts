@@ -20,6 +20,17 @@ const NOT_CONNECTED = new Set([
 
 export const netRetryDelaysMs = [1_000, 3_000]
 
+/** A request that got no HTTP response, after all safe repeats. */
+export class NetError extends Error {
+  readonly reason: string
+
+  constructor(message: string, reason: string, options?: { cause?: unknown }) {
+    super(message, options)
+    this.name = 'NetError'
+    this.reason = reason
+  }
+}
+
 /** The low-level reason of a failed fetch, e.g. ECONNRESET or TimeoutError. */
 export function transportCause(err: unknown): string | null {
   if (!(err instanceof Error)) return null
@@ -34,14 +45,15 @@ export function transportCause(err: unknown): string | null {
 /**
  * Runs attempt (which must build a fresh request, including its abort signal)
  * and repeats it after a transport failure when that is safe for method. The
- * final error names the cause and the number of attempts, so the log tells a
- * refused connection (local server down) from a timeout (load) or a reset
- * (network).
+ * final error is a NetError naming the cause, the number of attempts and the
+ * target host, so the log tells a refused connection (local server down) from
+ * a timeout (load) or a reset (network), and Multica from Trello.
  */
 export async function withNetRetry<T>(
   method: string,
   attempt: () => Promise<T>,
   delays: number[] = netRetryDelaysMs,
+  target?: string,
 ): Promise<T> {
   for (let i = 0; ; i++) {
     try {
@@ -51,7 +63,8 @@ export async function withNetRetry<T>(
       if (cause === null) throw err
       const safe = IDEMPOTENT.has(method.toUpperCase()) || NOT_CONNECTED.has(cause)
       if (!safe || i >= delays.length) {
-        throw new Error(`${(err as Error).message} [${cause}, ${i + 1} Versuch${i ? 'e' : ''}]`, { cause: err })
+        const where = target ? `, ${target}` : ''
+        throw new NetError(`${(err as Error).message} [${cause}, ${i + 1} Versuch${i ? 'e' : ''}${where}]`, cause, { cause: err })
       }
       await new Promise((r) => setTimeout(r, delays[i]))
     }

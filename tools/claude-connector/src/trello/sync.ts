@@ -9,6 +9,7 @@ import { chmodSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { type Agent, type Comment, type Issue, type Member, type MulticaApi, MulticaError } from '../multica.ts'
+import { NetError } from '../net-retry.ts'
 import { MIRRORED_STATUS, type Pair } from './config.ts'
 import { type TCard, type TLabel, type TList, type Trello, TrelloError } from './trello.ts'
 
@@ -436,7 +437,12 @@ export class Sync {
     }
   }
 
-  /** Full pass over one project: every issue pushed, cards of issues that left the project archived. */
+  /**
+   * Full pass over one project: every issue pushed, cards of issues that left the project archived.
+   * A NetError (no response from Multica or Trello) ends the pass: when one request gets no answer
+   * after its repeats, the next ones would wait just as long and add load to a stalled Mac. The
+   * caller repeats the whole pass, which pushes every card again.
+   */
   async reconcile(pair: Pair): Promise<Record<PushResult, number>> {
     const counts: Record<PushResult, number> = { created: 0, linked: 0, updated: 0, unchanged: 0, archived: 0, skipped: 0 }
     const ctx = await this.board(pair, true)
@@ -448,6 +454,7 @@ export class Sync {
       try {
         counts[await this.pushIssue(i.id)]++
       } catch (err) {
+        if (err instanceof NetError) throw err
         this.log(`fehler bei ${i.identifier}: ${(err as Error).message}`)
       }
     }
@@ -456,6 +463,7 @@ export class Sync {
       try {
         counts[await this.pushIssue(l.issueId)]++
       } catch (err) {
+        if (err instanceof NetError) throw err
         this.log(`fehler bei ${l.identifier}: ${(err as Error).message}`)
       }
     }

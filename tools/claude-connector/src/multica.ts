@@ -75,7 +75,7 @@ async function call<T>(f: Fetch, url: string, init: RequestInit): Promise<T> {
   const { res, text } = await withNetRetry(init.method ?? 'GET', async () => {
     const res = await f(url, { ...init, signal: AbortSignal.timeout(15_000) })
     return { res, text: await res.text() }
-  })
+  }, undefined, new URL(url).host)
   if (!res.ok) {
     let msg = text.slice(0, 300)
     try {

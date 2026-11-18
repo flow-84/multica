@@ -98,7 +98,7 @@ export class Trello {
       const { res, text } = await withNetRetry(method, async () => {
         const res = await this.f(url, { method, headers, body, signal: AbortSignal.timeout(20_000) })
         return { res, text: await res.text() }
-      })
+      }, undefined, new URL(url).host)
       if (res.status === 429 && attempt < 3) {
         await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)))
         continue
