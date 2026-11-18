@@ -1565,7 +1565,8 @@ var detectVersionTimeout = 10 * time.Second
 // the probe is killed mid-assessment ("ASP: Security policy would not allow
 // process"), the assessment never completes and every later probe starts it
 // over. MS-3886 lost ten hours of runs to that loop. Only the daemon's
-// self-heal path opts in, so registration keeps failing a wedged CLI fast.
+// self-heal at the task-launch boundary opts in; registration, including its
+// own self-heal, keeps failing a wedged CLI fast.
 var firstLaunchVersionTimeout = 2 * time.Minute
 
 type firstLaunchProbeKey struct{}

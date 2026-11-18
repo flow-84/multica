@@ -437,3 +437,44 @@ func TestResolveAgentEntry_RetriesKilledVersionProbeDuringHeal(t *testing.T) {
 		t.Fatalf("got (%q, %q) after %d probes, want (%q, %q) after 2", got.Path, ver, probes, v2, "0.144.3")
 	}
 }
+
+// MS-3997 review: the retry and the first-launch allowance belong to the task
+// launch only. A registration heal must keep its single fast probe so a wedged
+// CLI cannot stall registration for minutes.
+func TestResolveAgentEntry_RegistrationHealProbesOnceWithoutFirstLaunch(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink/exec-bit layout is POSIX-specific")
+	}
+	origDelays := healVersionRetryDelays
+	healVersionRetryDelays = []time.Duration{0}
+	t.Cleanup(func() { healVersionRetryDelays = origDelays })
+	probes, firstLaunch := 0, 0
+	origDetect := detectAgentVersion
+	detectAgentVersion = func(ctx context.Context, runtimeCmd agent.Command) (string, error) {
+		probes++
+		if agent.IsFirstLaunchProbe(ctx) {
+			firstLaunch++
+		}
+		return "", errors.New("detect version for " + runtimeCmd.Path + ": signal: killed")
+	}
+	t.Cleanup(func() { detectAgentVersion = origDetect })
+
+	root := t.TempDir()
+	stableBin := filepath.Join(root, "bin")
+	t.Setenv("PATH", stableBin)
+	t.Setenv("SHELL", filepath.Join(t.TempDir(), "fish"))
+	v1 := installVersionedCodex(t, root, "0.144.1", stableBin)
+	d := newSelfHealTestDaemon()
+	d.setAgentVersion("codex", "0.144.1")
+	entry := AgentEntry{Path: v1, Command: "codex"}
+
+	if err := os.RemoveAll(filepath.Join(root, "Caskroom", "codex", "0.144.1")); err != nil {
+		t.Fatal(err)
+	}
+	installVersionedCodex(t, root, "0.144.3", stableBin)
+
+	d.resolveAgentEntry(context.Background(), "codex", entry)
+	if probes != 1 || firstLaunch != 0 {
+		t.Fatalf("registration heal ran %d probes (%d with first-launch allowance), want 1 (0)", probes, firstLaunch)
+	}
+}
