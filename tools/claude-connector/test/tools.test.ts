@@ -131,8 +131,14 @@ describe('schreiben', () => {
   })
 
   it('kündigt den Agentenlauf an, wenn todo mit Agent', async () => {
-    const r = await callTool(client, 'create_issue', { project: 'Multica', title: 'Sofort los', assignee: 'Builder', status: 'todo' })
+    const description = 'Ziel: der Spiegel meldet Netzaussetzer als verschoben. Kontext: Mac unter Last, Abgleich alle zehn Minuten. Abnahme: ein echter Lauf nach dem Fix ohne Fehlerzeile im Log.'
+    const r = await callTool(client, 'create_issue', { project: 'Multica', title: 'Sofort los', assignee: 'Builder', status: 'todo', description })
     assert.match(r.text, /Builder fängt gleich an\.$/)
+  })
+
+  it('startet keinen Agentenlauf mit zu knapper Beschreibung', async () => {
+    const r = await callTool(client, 'create_issue', { project: 'Multica', title: 'Sofort los', assignee: 'Builder', status: 'todo' })
+    assert.match(r.text, /Beschreibung ist zu knapp/)
   })
 
   it('ändert Status und Zuständigen', async () => {

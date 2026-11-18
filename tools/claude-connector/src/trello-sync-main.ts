@@ -7,7 +7,9 @@ import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { MulticaApi } from './multica.ts'
+import { NetError } from './net-retry.ts'
 import { loadSyncFile, syncEnv } from './trello/config.ts'
+import { Outage } from './trello/outage.ts'
 import { Sync, SyncStore, type WsFrame, openSyncDb, relevantIssue } from './trello/sync.ts'
 import { Trello, readTrelloCreds } from './trello/trello.ts'
 
@@ -25,6 +27,10 @@ const readToken = () => {
 }
 const reconcileMs = Number(process.env.TRELLO_SYNC_RECONCILE_MIN ?? 10) * 60_000
 const DEBOUNCE_MS = 3_000
+// A pass cut short by a request without response is repeated after this delay.
+const CATCH_UP_MS = 60_000
+// Only a stretch without response longer than this counts as an error.
+const OUTAGE_ERROR_MS = 30 * 60_000
 
 const log = (msg: string) => console.log(`${new Date().toISOString()} ${msg}`)
 const file = loadSyncFile(env.syncFile)
@@ -47,6 +53,22 @@ const serial = (fn: () => Promise<void>) => {
   return chain
 }
 
+const outage = new Outage(OUTAGE_ERROR_MS)
+let catchUp: NodeJS.Timeout | null = null
+
+/** A request got no response: the full pass after CATCH_UP_MS pushes every card again. */
+function netFailed(what: string, err: NetError): void {
+  const { error, minutes } = outage.failed(Date.now())
+  if (error) log(`fehler bei ${what}: seit ${minutes} min keine Antwort, ${err.message}`)
+  else log(`verschoben (${what}): ${err.message}; neuer abgleich in ${CATCH_UP_MS / 1000} s`)
+  if (!catchUp) {
+    catchUp = setTimeout(() => {
+      catchUp = null
+      void reconcileAll('nachholen')
+    }, CATCH_UP_MS)
+  }
+}
+
 function enqueue(issueId: string): void {
   pending.add(issueId)
   if (timer) clearTimeout(timer)
@@ -59,6 +81,10 @@ function enqueue(issueId: string): void {
         try {
           await sync.pushIssue(id)
         } catch (err) {
+          if (err instanceof NetError) {
+            netFailed(id, err)
+            return
+          }
           log(`fehler bei ${id}: ${(err as Error).message}`)
         }
       }
@@ -66,13 +92,27 @@ function enqueue(issueId: string): void {
   }, DEBOUNCE_MS)
 }
 
+// A queued pass that has not started yet covers every later request, so
+// reconnects in quick succession (WebSocket flapping under load) queue one pass.
+let passQueued = false
 async function reconcileAll(reason: string): Promise<void> {
+  if (passQueued) return
+  passQueued = true
   await serial(async () => {
+    passQueued = false
     for (const pair of file.pairs) {
       const t0 = Date.now()
-      const c = await sync.reconcile(pair)
-      log(`abgleich ${pair.projectName} (${reason}, ${Date.now() - t0} ms): ${JSON.stringify(c)}`)
+      try {
+        const c = await sync.reconcile(pair)
+        log(`abgleich ${pair.projectName} (${reason}, ${Date.now() - t0} ms): ${JSON.stringify(c)}`)
+      } catch (err) {
+        if (!(err instanceof NetError)) throw err
+        netFailed(`abgleich ${pair.projectName}`, err)
+        return
+      }
     }
+    const minutes = outage.recovered(Date.now())
+    if (minutes !== null) log(`wieder erreichbar: verschobenes nach ${minutes} min nachgeholt`)
   })
 }
 

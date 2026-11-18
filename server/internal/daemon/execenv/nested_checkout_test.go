@@ -92,3 +92,30 @@ func TestFindCheckoutsWithUnsavedWork(t *testing.T) {
 		t.Fatalf("checkouts with unsaved work = %v, want [%s %s]", got, dirty, unpushed)
 	}
 }
+
+// MS-3886: the agent cloned a repo into the task worktree, committed its own
+// work itself and left the clone clean. The clone is excluded from staging,
+// yet `git status` still listed it, so Finalize ran a commit with nothing
+// staged and failed the finished task on "nothing added to commit but
+// untracked files present".
+func TestFinalizeTreatsOnlyASavedNestedCheckoutAsNothingToCommit(t *testing.T) {
+	t.Parallel()
+	repo := newTestRepo(t)
+	wt := prepareForTest(t, repo)
+	writeFile(t, filepath.Join(wt.Path, "crm-change.txt"), "crm work\n")
+	gitRun(t, wt.Path, "add", "crm-change.txt")
+	gitRun(t, wt.Path, "commit", "-qm", "agent work")
+	gitRun(t, wt.Path, "clone", "-q", repo, filepath.Join(wt.Path, "crypto-trading-bot"))
+
+	outcome, err := wt.Finalize(worktreeTestLogger())
+	if err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+	if outcome.AutoCommitted || outcome.PreservedPath != "" {
+		t.Fatalf("outcome = %+v, want no auto-commit and the worktree released", outcome)
+	}
+	tree := gitRun(t, repo, "ls-tree", "--name-only", outcome.Branch)
+	if !strings.Contains(tree, "crm-change.txt") || strings.Contains(tree, "crypto-trading-bot") {
+		t.Fatalf("delivered branch tree:\n%s", tree)
+	}
+}

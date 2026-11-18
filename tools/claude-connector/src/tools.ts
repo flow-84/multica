@@ -15,7 +15,8 @@ const INSTRUCTIONS = [
   'Steuert den Multica-Workspace von fl0w (Issues, Projekte, Agenten). Antworten sind kurze deutsche Sätze zum Vorlesen.',
   'Projekte und Zuständige werden mit ihrem Namen angegeben, Issues mit ihrer Kennung wie MS-2400.',
   'Vor dem Anlegen eines Issues, einer Statusänderung oder einem Kommentar den Inhalt kurz bestätigen lassen.',
-  'Ein Issue mit Status todo und einem Agenten als Zuständigem startet sofort einen Agentenlauf.',
+  'Ein Issue mit Status todo und einem Agenten als Zuständigem startet sofort einen Agentenlauf. Eine Karte im Backlog startet nur von selbst, wenn sie die nächste Stufe einer laufenden Kette ist oder ihr start_date oder due_date erreicht ist. In pausierten Projekten startet nie etwas.',
+  'Jede Karte wird so geschrieben, dass ein Agent sie ohne Rückfrage erledigen kann: Titel als Verb plus Gegenstand (zum Beispiel „Neuabo-Liste im CRM als Tabelle anzeigen“), description mit Ziel, Kontext und Grenzen (was nicht zu tun ist), acceptance mit prüfbaren Abnahmepunkten. Diktat von fl0w wird dafür ausformuliert, nicht wörtlich übernommen.',
   'Gibt es ein genanntes Projekt noch nicht, wird es mit create_project angelegt, nicht über eine Karte an einen Agenten.',
   'Unterkarten entstehen mit create_issue und parent, Abhängigkeiten mit blocked_by oder blocks.',
   'Tippfehler in Titel, Beschreibung oder Kommentar werden mit update_issue oder edit_comment korrigiert, die Karte wird dafür nicht neu angelegt.',
@@ -319,7 +320,10 @@ const issueRefs = z.array(z.string().min(2).max(40)).max(10)
 export const createIssueInput = {
   project: z.string().optional().describe('Projektname. Darf bei einer Unterkarte fehlen, dann gilt das Projekt der Oberkarte. Fehlt das Projekt in Multica, zuerst create_project.'),
   title: z.string().min(3).max(200).describe('Titel des Issues'),
-  description: z.string().max(10_000).optional().describe('Beschreibung, gern mehrere Sätze'),
+  description: z.string().max(10_000).optional().describe('Ziel (was soll danach anders sein), Kontext (wo, warum, Belege) und Grenzen (was nicht zu tun ist). Ausformuliert, nicht das rohe Diktat.'),
+  acceptance: z.array(z.string().min(3).max(300)).max(10).optional().describe('Prüfbare Abnahmepunkte, je ein Satz, zum Beispiel „Seite /neuabos zeigt die Abos der letzten 7 Tage“. Landen als Abschnitt „Abnahme“ in der Beschreibung.'),
+  start_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('Startdatum YYYY-MM-DD. Ist es erreicht, startet die Karte auch aus dem Backlog.'),
+  due_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('Fälligkeit YYYY-MM-DD. Ist sie erreicht, startet die Karte auch aus dem Backlog.'),
   assignee: z.string().optional().describe('Name eines Agenten (Builder, Scribe, Reviewer, Claude …) oder Mitglieds, "ich" für fl0w'),
   status: z.enum(STATUS).optional().describe('Standard backlog. todo mit Agent startet sofort einen Lauf.'),
   priority: z.enum(PRIORITY).optional().describe('Standard none'),
@@ -375,7 +379,14 @@ async function createIssue(c: Ctx, a: z.infer<z.ZodObject<typeof createIssueInpu
     throw new Say(`${ids(open)} ist noch nicht erledigt. Eine wartende Karte bitte mit Status backlog anlegen, ${assignee.name} startet dann von selbst.`)
   }
   const body: Record<string, unknown> = { title: a.title.trim(), project_id: project.id, status, priority: a.priority ?? 'none' }
-  if (a.description?.trim()) body.description = a.description.trim()
+  if (status === 'todo' && assignee?.type === 'agent' && (a.description?.trim().length ?? 0) < 150) {
+    throw new Say(`${assignee.name} würde sofort starten, aber die Beschreibung ist zu knapp. Bitte Ziel, Kontext und Abnahme ausformulieren.`)
+  }
+  const abnahme = (a.acceptance ?? []).map((x) => `- ${x.trim()}`).join('\n')
+  const text = [a.description?.trim(), abnahme && `## Abnahme\n${abnahme}`].filter(Boolean).join('\n\n')
+  if (text) body.description = text
+  if (a.start_date) body.start_date = a.start_date
+  if (a.due_date) body.due_date = a.due_date
   if (assignee) {
     body.assignee_type = assignee.type
     body.assignee_id = assignee.id
@@ -956,7 +967,7 @@ export function buildMcpServer(deps: ToolDeps, who: Principal): McpServer {
     {
       title: 'Issue anlegen',
       description:
-        'Legt ein Issue in einem Projekt an, auf Wunsch als Unterkarte (parent, stage), mit Abhängigkeiten (blocked_by, blocks) und Labels. Gibt es das Projekt noch nicht, zuerst create_project aufrufen. Vorher Titel, Projekt und Zuständigen bestätigen lassen.',
+        'Legt ein Issue in einem Projekt an, auf Wunsch als Unterkarte (parent, stage), mit Abhängigkeiten (blocked_by, blocks), Labels, Abnahme (acceptance) und Datum (start_date, due_date). Titel als Verb plus Gegenstand, Beschreibung mit Ziel, Kontext und Grenzen, Abnahme mit prüfbaren Punkten. Gibt es das Projekt noch nicht, zuerst create_project aufrufen. Vorher Titel, Projekt und Zuständigen bestätigen lassen.',
       inputSchema: createIssueInput,
       annotations: WRITE,
     },

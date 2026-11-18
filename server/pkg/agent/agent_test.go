@@ -194,3 +194,27 @@ func TestRunContextPositiveTimeoutHasDeadline(t *testing.T) {
 		t.Fatalf("unexpected deadline remaining: %s", remaining)
 	}
 }
+
+// MS-3886: the first launch of a quarantined Cask binary waits for the macOS
+// security assessment. A first-launch probe must outlast the regular bound;
+// the regular probe must still fail fast.
+func TestDetectVersionFirstLaunchProbeOutlastsRegularTimeout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script stub is POSIX-only")
+	}
+	script := filepath.Join(t.TempDir(), "slowcli")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nsleep 1\necho '2.1.326 (Claude Code)'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	origRegular, origFirst := detectVersionTimeout, firstLaunchVersionTimeout
+	detectVersionTimeout, firstLaunchVersionTimeout = 200*time.Millisecond, 10*time.Second
+	t.Cleanup(func() { detectVersionTimeout, firstLaunchVersionTimeout = origRegular, origFirst })
+
+	if _, err := DetectVersion(context.Background(), Command{Path: script}); err == nil {
+		t.Fatal("regular probe outlived detectVersionTimeout")
+	}
+	version, err := DetectVersion(WithFirstLaunchProbe(context.Background()), Command{Path: script})
+	if err != nil || version != "2.1.326 (Claude Code)" {
+		t.Fatalf("first-launch probe = (%q, %v), want the version", version, err)
+	}
+}
