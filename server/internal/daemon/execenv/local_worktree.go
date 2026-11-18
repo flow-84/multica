@@ -831,6 +831,15 @@ func commitEverything(worktreePath, message string, allowEmpty bool, exclude ...
 	if out, err := runGit(worktreePath, addArgs...); err != nil {
 		return false, fmt.Errorf("git add: %s: %w", strings.TrimSpace(out), err)
 	}
+	// Nothing staged is the benign case even when `git status` called the tree
+	// dirty: an excluded nested checkout still shows as untracked, and git
+	// commit then fails with "nothing added to commit but untracked files
+	// present" instead of "nothing to commit" (MS-3886).
+	if !allowEmpty {
+		if _, err := runGit(worktreePath, "diff", "--cached", "--quiet"); err == nil {
+			return false, nil
+		}
+	}
 	// --no-verify: the user's commit hooks are written for the user's own
 	// workflow (interactive linters, test suites, signing prompts) and a hook
 	// failure here would mean losing the agent's work to save a lint run. Note

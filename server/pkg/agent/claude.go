@@ -1558,8 +1558,36 @@ func cleanupMcpConfigTemp(path string) {
 // tests can shrink it without waiting out the real bound.
 var detectVersionTimeout = 10 * time.Second
 
+// firstLaunchVersionTimeout bounds the probe of a binary this host may never
+// have run, such as the one a Homebrew Cask upgrade just put in place. macOS
+// assesses a quarantined executable on its first launch (Gatekeeper scans the
+// whole ~350 MB claude binary); under load that outlasts detectVersionTimeout,
+// the probe is killed mid-assessment ("ASP: Security policy would not allow
+// process"), the assessment never completes and every later probe starts it
+// over. MS-3886 lost ten hours of runs to that loop. Only the daemon's
+// self-heal path opts in, so registration keeps failing a wedged CLI fast.
+var firstLaunchVersionTimeout = 2 * time.Minute
+
+type firstLaunchProbeKey struct{}
+
+// WithFirstLaunchProbe marks ctx so DetectVersion allows the binary the time
+// a first-launch security assessment needs.
+func WithFirstLaunchProbe(ctx context.Context) context.Context {
+	return context.WithValue(ctx, firstLaunchProbeKey{}, true)
+}
+
+// IsFirstLaunchProbe reports whether ctx carries WithFirstLaunchProbe.
+func IsFirstLaunchProbe(ctx context.Context) bool {
+	first, _ := ctx.Value(firstLaunchProbeKey{}).(bool)
+	return first
+}
+
 func detectCLIVersion(ctx context.Context, runtimeCmd Command) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, detectVersionTimeout)
+	timeout := detectVersionTimeout
+	if IsFirstLaunchProbe(ctx) {
+		timeout = firstLaunchVersionTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	if runtime.GOOS == "windows" {
 		if native := resolveCodeArtsNativeFromShim(runtimeCmd.Path, os.Stat); native != "" {
