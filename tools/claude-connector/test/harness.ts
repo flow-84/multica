@@ -308,8 +308,13 @@ export async function startHarness(): Promise<Harness> {
     fake,
     clock,
     close: async () => {
-      await new Promise((r) => app.close(r))
-      await new Promise((r) => fake.server.close(r))
+      // close() alone waits for every open connection. An MCP client left open
+      // by a failed assertion keeps its SSE stream alive, and the test file
+      // would never end (MS-4128), so cut the remaining connections as well.
+      const closing = [app, fake.server].map((s) => new Promise((r) => s.close(r)))
+      app.closeAllConnections()
+      fake.server.closeAllConnections()
+      await Promise.all(closing)
       db.close()
     },
   }

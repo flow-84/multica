@@ -109,7 +109,7 @@ claude.ai fragt zuerst `server/discover` mit einer neueren Protokollversion im H
 ```bash
 cd tools/claude-connector
 npm ci
-npm test          # 101 Tests: OAuth Ende zu Ende, alle Werkzeuge, Seitengrenzen und die Trello-Spiegelung gegen nachgebautes Multica und Trello
+npm test          # 116 Tests: OAuth Ende zu Ende, alle Werkzeuge, Seitengrenzen und die Trello-Spiegelung gegen nachgebautes Multica und Trello; hängt ein Test, bricht er nach 60 s ab statt Prozesse zurückzulassen
 npm run typecheck
 ```
 
