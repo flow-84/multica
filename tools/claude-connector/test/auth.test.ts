@@ -162,7 +162,7 @@ describe('Token', () => {
   it('öffnet /mcp mit gültigem Token und speichert keine Klartext-Tokens', async () => {
     const t = await login(h.base)
     const client = await mcpClient(h.base, t.access)
-    const tools = await client.listTools()
+    const tools = await client.listTools().finally(() => client.close())
     assert.deepEqual(tools.tools.map((x) => x.name).sort(), [
       'add_comment',
       'archive_issue',
@@ -179,7 +179,6 @@ describe('Token', () => {
       'update_issue',
       'update_project',
     ])
-    await client.close()
     const dump = JSON.stringify(h.db.prepare('SELECT * FROM tokens').all()) + JSON.stringify(h.db.prepare('SELECT * FROM codes').all())
     assert.equal(dump.includes(t.access), false)
     assert.equal(dump.includes(t.refresh), false)
@@ -240,5 +239,16 @@ describe('Bremse', () => {
     assert.equal(l.allow('b', 10), true)
     t = 60
     assert.equal(l.allow('a', 10), true)
+  })
+})
+
+describe('Testumgebung', () => {
+  // A failed assertion before client.close() left the SSE stream open and the
+  // whole test file hung in after() (MS-4128).
+  it('schließt auch mit offenem MCP-Client', { timeout: 10_000 }, async () => {
+    const own = await startHarness()
+    const t = await login(own.base)
+    await (await mcpClient(own.base, t.access)).listTools()
+    await own.close()
   })
 })
