@@ -1644,6 +1644,50 @@ func TestFinalizeRefusesToRecordADeliveryFromOffTheBranch(t *testing.T) {
 	_ = removeLocalWorktreeDir(repo, wt.Path, worktreeTestLogger())
 }
 
+// MS-4073: a run merged its PR (squash), checked out the merged remote branch
+// to deploy it and left an untracked check script behind. Everything at that
+// detached HEAD is already on the remote, so finalize returns the worktree to
+// the task's branch and commits the leftover there instead of refusing a run
+// that delivered its work.
+func TestFinalizeReturnsFromADetachedHeadOnPushedHistory(t *testing.T) {
+	t.Parallel()
+	repo := newTestRepo(t)
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	gitRun(t, repo, "init", "--quiet", "--bare", remote)
+	gitRun(t, repo, "remote", "add", "origin", remote)
+	gitRun(t, repo, "push", "--quiet", "origin", "main")
+
+	wt := prepareTurn(t, repo, "MS-4011", turnOneTask)
+	writeFile(t, filepath.Join(wt.WorkDir, "agent.txt"), "turn one\n")
+	gitRun(t, wt.Path, "add", "-A")
+	gitRun(t, wt.Path, "commit", "-m", "turn one")
+	delivered := gitRun(t, repo, "rev-parse", "agent/j/ms-4011")
+
+	// Squash-merge on the remote: same tree, parent is main, not the branch.
+	squash := gitRun(t, repo, "commit-tree", delivered+"^{tree}", "-p", "main", "-m", "squash (#1)")
+	gitRun(t, repo, "push", "--quiet", "origin", squash+":refs/heads/main")
+	gitRun(t, repo, "fetch", "--quiet", "origin")
+	gitRun(t, wt.Path, "checkout", "--quiet", "--detach", "origin/main")
+	writeFile(t, filepath.Join(wt.WorkDir, "check.sh"), "#!/bin/sh\n")
+
+	outcome, err := wt.Finalize(worktreeTestLogger())
+	if err != nil {
+		t.Fatalf("Finalize refused a run whose detached HEAD was pushed history: %v", err)
+	}
+	if outcome.Branch != "agent/j/ms-4011" || !outcome.AutoCommitted {
+		t.Errorf("outcome = %+v, want the task branch with the leftover auto-committed", outcome)
+	}
+	if parent := gitRun(t, repo, "rev-parse", "agent/j/ms-4011^"); parent != delivered {
+		t.Errorf("leftover committed on %s, want on the task's own commit %s", parent, delivered)
+	}
+	if got := gitRun(t, repo, "show", "agent/j/ms-4011:check.sh"); got != "#!/bin/sh" {
+		t.Errorf("leftover not on the branch: %q", got)
+	}
+	if got := gitRun(t, repo, "rev-parse", "origin/main"); got != squash {
+		t.Errorf("remote branch moved to %s", got)
+	}
+}
+
 // A branch created by this prepare always gets a commit of its own, even when
 // the user's directory was clean and there was nothing to replay. Without it
 // the branch would sit exactly where the user's HEAD does, and nothing would
