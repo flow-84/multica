@@ -87,7 +87,7 @@ claude.ai ruft Connectoren aus dem Internet auf. Ein Cloud-Server kommt nicht in
 
 Bis 24.10.2026 lief der Connector über Tailscale Funnel. Am 22.10.2026 abends hat Tailscale den öffentlichen DNS-Eintrag von `macbook-air-von-fl0w.taildc41c0.ts.net` entfernt, obwohl die Konsole Funnel weiter als aktiv zeigte. Neu anmelden, Funnel umschalten und `tailscale funnel reset` mit Wiederherstellung holten ihn nicht zurück, und claude.ai meldete „Multica konnte nicht erreicht werden“.
 
-Ein Wächter (`com.fl0w.multica-claude-connector-watchdog`, alle 5 Minuten) ruft `/mcp` über die öffentliche Adresse auf und meldet jeden Wechsel zwischen erreichbar und nicht erreichbar per Telegram an fl0w (Secret `multiversemedia-alert-telegram`).
+Ein Wächter (`com.fl0w.multica-claude-connector-watchdog`, alle 5 Minuten) ruft `/mcp` über die öffentliche Adresse auf und meldet jeden Wechsel zwischen erreichbar und nicht erreichbar an den Alarm-Eingang (`multica-connector:nicht-erreichbar:mcp`); nur wenn der Eingang fehlt, direkt per Telegram (Secret `multiversemedia-alert-telegram`). Liegt beim Ausfall die 1-Minuten-Last über 3 × Kernzahl oder scheitert die eigene Internetprobe (`https://1.1.1.1/cdn-cgi/trace`), ist der Mac die Ursache: dann geht nur `mac-last:befund:multica-connector` in den Tagesdigest, und der nächste Lauf alarmiert, falls der Connector danach weiter fehlt (MS-4117).
 
 ## Betrieb
 
