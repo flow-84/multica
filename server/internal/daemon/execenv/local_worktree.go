@@ -611,6 +611,11 @@ func (w *LocalWorktree) Finalize(logger *slog.Logger) (LocalWorktreeOutcome, err
 			quotedPaths(unsaved), w.Branch, w.Path, w.GitRoot)
 	}
 
+	// Before anything is committed: a run that only looked at pushed history
+	// (checked out the merged remote branch to deploy it) is returned to its
+	// own branch, so its leftovers land there instead of on a stray commit.
+	w.returnFromPushedDetachedHead(logger)
+
 	// Treat "can't tell" like "dirty": committing costs an empty commit at
 	// worst, while assuming clean risks deleting the agent's edits.
 	dirty, statusErr := worktreeIsDirty(w.Path)
@@ -1459,6 +1464,44 @@ func quotedPaths(paths []string) string {
 		quoted = append(quoted, strconv.Quote(path))
 	}
 	return strings.Join(quoted, ", ")
+}
+
+// returnFromPushedDetachedHead puts a worktree that ended on a detached HEAD
+// back on the task's branch, but only when that HEAD is already reachable from
+// a remote-tracking ref. That is the shape of a run that merged its PR and then
+// checked out the merged remote branch to deploy or verify it (MS-4073): every
+// commit at HEAD exists on the remote, so leaving it loses nothing, and the
+// task's own work is still on its branch. Without this, the auto-commit of any
+// leftover file lands on top of the remote branch and the delivery check
+// rightly refuses it, failing a run that delivered everything.
+//
+// A detached HEAD carrying commits that exist nowhere else is left alone, and
+// so is a checkout git refuses because uncommitted edits would be overwritten:
+// both still end in the delivery check's refusal with the worktree preserved.
+func (w *LocalWorktree) returnFromPushedDetachedHead(logger *slog.Logger) {
+	if _, err := runGitTrimmed(w.Path, "symbolic-ref", "-q", "HEAD"); err == nil {
+		return // on a branch: the delivery check judges which one
+	}
+	head, err := runGitTrimmed(w.Path, "rev-parse", "--verify", "HEAD")
+	if err != nil || head == "" {
+		return
+	}
+	pushed, err := runGitTrimmed(w.Path, "for-each-ref", "--count=1", "--contains", head,
+		"--format=%(refname)", "refs/remotes")
+	if err != nil || pushed == "" {
+		return
+	}
+	if out, err := runGit(w.Path, "checkout", "--quiet", w.Branch); err != nil {
+		if logger != nil {
+			logger.Warn("execenv: worktree ended detached on pushed history and could not return to its branch",
+				"path", w.Path, "branch", w.Branch, "head", shortID(head), "output", strings.TrimSpace(out), "error", err)
+		}
+		return
+	}
+	if logger != nil {
+		logger.Info("execenv: worktree ended detached on pushed history; returned it to its own branch",
+			"path", w.Path, "branch", w.Branch, "head", shortID(head), "pushed_ref", pushed)
+	}
 }
 
 // verifyDeliveryPoint checks that tip is a commit this conversation can put its
