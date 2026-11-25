@@ -46,6 +46,8 @@ export interface Tg {
   edit(chatId: number, messageId: number, text: string, keyboard?: Keyboard): Promise<void>
   delete(chatId: number, messageId: number): Promise<void>
   answerCallback(id: string, text?: string): Promise<void>
+  /** Creates a forum topic and returns its message_thread_id (MS-4383). */
+  createTopic(chatId: number, name: string, iconColor?: number): Promise<number>
 }
 
 export class TelegramApi implements Tg {
@@ -117,5 +119,10 @@ export class TelegramApi implements Tg {
 
   async answerCallback(id: string, text?: string): Promise<void> {
     await this.call('answerCallbackQuery', text ? { callback_query_id: id, text } : { callback_query_id: id })
+  }
+
+  async createTopic(chatId: number, name: string, iconColor?: number): Promise<number> {
+    const t = await this.call<{ message_thread_id: number }>('createForumTopic', iconColor ? { chat_id: chatId, name, icon_color: iconColor } : { chat_id: chatId, name })
+    return t.message_thread_id
   }
 }

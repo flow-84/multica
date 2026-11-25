@@ -31,6 +31,8 @@ const flowUserId = env.DECISION_BOT_FLOW_USER_ID?.trim() || '46ece536-d531-4ef9-
 const appUrl = (env.DECISION_BOT_APP_URL?.trim() || 'https://macbook-air-von-fl0w.taildc41c0.ts.net:8446').replace(/\/+$/, '')
 const slug = env.DECISION_BOT_WORKSPACE_SLUG?.trim() || 'm2s'
 const goLiveCard = env.DECISION_BOT_GOLIVE_CARD?.trim() || ''
+/** fl0w's private forum group "multica" with the topics (MS-4383); "0" = no group, `ziel` applies. */
+const groupId = Number(env.DECISION_BOT_GROUP_ID?.trim() || -1005661574626) || null
 const scanMs = Number(env.DECISION_BOT_SCAN_SEC ?? 120) * 1000
 const graceMs = Number(env.DECISION_BOT_GRACE_SEC ?? 120) * 1000
 const telegramUrl = (env.DECISION_BOT_TELEGRAM_URL?.trim() || 'https://api.telegram.org').replace(/\/+$/, '')
@@ -95,9 +97,10 @@ function makeBot(tg: TelegramApi | null, store: Store): DecisionBot {
   }
   return new DecisionBot({
     board,
-    tg: tg ?? { send: none, edit: none, delete: none, answerCallback: none },
+    tg: tg ?? { send: none, edit: none, delete: none, answerCallback: none, createTopic: none },
     store,
     ownerChatId: tg ? readChatId() : 0,
+    groupId,
     flowUserId,
     link,
     graceMs,
@@ -204,7 +207,8 @@ async function main(): Promise<void> {
   if (cmd === 'status') {
     const store = openStore()
     const rows = store.inState('neu', 'gesendet', 'spaeter', 'beantwortet')
-    console.log(JSON.stringify({ live: isLive(), token: !!readBotToken(), ziel: readRouting(store), offen: rows.map((r) => ({ id: r.id, karte: r.identifier, state: r.state, frage: r.frage.slice(0, 80) })) }, null, 2))
+    const topics = Object.fromEntries(['offen', 'dringend', 'spaeter', 'beantwortet', 'status'].map((t) => [t, Number(store.getKv(`topic:${t}`) ?? 0) || null]))
+    console.log(JSON.stringify({ live: isLive(), token: !!readBotToken(), gruppe: groupId, themen: topics, ziel: groupId ? 'Gruppe (ziel gilt nur ohne Gruppe)' : readRouting(store), offen: rows.map((r) => ({ id: r.id, karte: r.identifier, state: r.state, ort: r.chat_id === groupId ? `Gruppe, Thema ${r.thread_id}` : 'privat', frage: r.frage.slice(0, 80) })) }, null, 2))
     return
   }
   if (cmd === 'ziel') {

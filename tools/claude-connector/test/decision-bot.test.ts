@@ -128,8 +128,12 @@ class FakeTg implements Tg {
   edits: { id: number; text: string; keyboard: Keyboard | undefined }[] = []
   deleted: { chat: number; id: number }[] = []
   callbacks: { id: string; text?: string }[] = []
+  topics: { chat: number; name: string; thread: number }[] = []
+  /** Chats that refuse every call (group not reachable). */
+  down = new Set<number>()
   next = 100
   async send(to: Target, text: string, keyboard?: Keyboard, forceReply = false) {
+    if (this.down.has(to.chat)) throw new Error('Bad Request: chat not found')
     const id = this.next++
     this.sent.push({ id, chat: to.chat, thread: to.thread, text, keyboard, forceReply })
     return id
@@ -146,9 +150,21 @@ class FakeTg implements Tg {
   lastEdit(id: number) {
     return this.edits.filter((e) => e.id === id).at(-1)
   }
+  async createTopic(chat: number, name: string) {
+    if (this.down.has(chat)) throw new Error('Bad Request: chat not found')
+    const thread = 9000 + this.topics.length
+    this.topics.push({ chat, name, thread })
+    return thread
+  }
+  topic(name: string) {
+    return this.topics.find((t) => t.name === name)?.thread
+  }
+  inTopic(name: string) {
+    return this.sent.filter((m) => m.thread === this.topic(name))
+  }
 }
 
-function setup() {
+function setup(opts: { group?: number } = {}) {
   let now = Date.parse('2026-11-25T14:00:00Z')
   const board = new FakeBoard()
   const tg = new FakeTg()
@@ -159,6 +175,7 @@ function setup() {
     tg,
     store,
     ownerChatId: OWNER,
+    groupId: opts.group ?? null,
     flowUserId: FLOW,
     link: (k) => `https://host.test/m2s/issues/${k}`,
     now: () => now,
@@ -675,4 +692,194 @@ test('Datenbank von vor den Chat-IDs wird übernommen: Antwort auf eine alte Fra
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+// ---------------------------------------------------------------- group with topics (MS-4383)
+
+const FORUM = -1005661574626
+
+function groupSetup() {
+  const t = setup({ group: FORUM })
+  let upd = 10_000
+  /** Button in the group; `msg` is the message the button sits on. */
+  const pressIn = (data: string, msg: Sent, from = OWNER) =>
+    t.bot.handle({ update_id: upd++, callback_query: { id: `g${upd}`, from: { id: from }, message: { message_id: msg.id, message_thread_id: msg.thread ?? undefined, is_topic_message: true, chat: { id: FORUM } }, data } })
+  /** Text in a group topic; without replyTo it "replies" to the topic's first message, like Telegram does. */
+  const sayIn = (text: string, thread: number, from = OWNER, replyTo?: number) =>
+    t.bot.handle({
+      update_id: upd++,
+      message: { message_id: 7000 + upd, message_thread_id: thread, is_topic_message: true, chat: { id: FORUM, type: 'supergroup' }, from: { id: from }, text, reply_to_message: { message_id: replyTo ?? thread } },
+    } as TgUpdate)
+  return { ...t, pressIn, sayIn }
+}
+
+test('Gruppe: die fünf Themen entstehen, Begrüßung nur in Bot-Status, Frage mit Knöpfen in Offen, urgent und high in Dringend', async () => {
+  const t = groupSetup()
+  t.board.issues.push(
+    issue(1, { title: 'Entscheidung: Normal', description: 'Frage: Normale Frage?' }),
+    issue(2, { title: 'Entscheidung: Eilig', description: 'Frage: Eilige Frage?', priority: 'urgent' }),
+    issue(3, { title: 'Entscheidung: Hoch', description: 'Frage: Hohe Frage?', priority: 'high' }),
+  )
+  await ask(t)
+  assert.deepEqual(t.tg.topics.map((x) => x.name), ['Offen', 'Dringend', 'Später', 'Beantwortet', 'Bot-Status'])
+  assert.ok(t.tg.topics.every((x) => x.chat === FORUM))
+  assert.equal(t.tg.inTopic('Bot-Status').length, 1)
+  assert.match(t.tg.inTopic('Bot-Status')[0].text, /schreibt ab jetzt in diese Gruppe/)
+  const offen = t.tg.inTopic('Offen')
+  assert.deepEqual(offen.map((m) => m.text.split('\n')[0]), ['Entscheidung für MS-1 (model2star.com)'])
+  assert.deepEqual(t.buttons(offen[0]), ['Ja', 'Nein', 'Bemerkung', 'Später', 'Karte öffnen'])
+  assert.deepEqual(t.tg.inTopic('Dringend').map((m) => m.text.split('\n')[0]), ['Entscheidung für MS-2 (model2star.com)', 'Entscheidung für MS-3 (model2star.com)'])
+  assert.equal(t.tg.sent.filter((m) => m.chat === OWNER).length, 0, 'nichts im privaten Chat')
+  await ask(t)
+  assert.equal(t.tg.topics.length, 5, 'Themen werden nur einmal angelegt')
+  assert.equal(t.tg.inTopic('Bot-Status').length, 1, 'Begrüßung nur einmal')
+})
+
+test('Gruppe: Antwort per Knopf löscht die Frage aus Offen, Eintrag in Beantwortet, danach Kommentar an der Karte', async () => {
+  const t = groupSetup()
+  t.board.issues.push(issue(1, { title: 'Entscheidung: X', description: 'Frage: Machen wir das?' }))
+  await ask(t)
+  const q = t.tg.inTopic('Offen')[0]
+  await t.pressIn('a:1:j', q)
+  assert.deepEqual(t.tg.deleted, [{ chat: FORUM, id: q.id }])
+  const entry = t.tg.inTopic('Beantwortet')[0]
+  assert.match(entry.text, /^Beantwortet: MS-1 \(model2star\.com\), 25\.11\.2026, 15:00 Uhr\nFrage: Machen wir das\?\nAntwort: Ja\n/)
+  assert.deepEqual(t.buttons(entry), ['Bemerkung nachschieben', 'Karte öffnen'])
+  t.advance(121_000)
+  await t.bot.flush()
+  assert.match(t.board.written[0].content, /^Antwort von fl0w per Telegram .*: \*\*Ja\*\*\n\nFrage: Machen wir das\?$/)
+  const edited = t.tg.lastEdit(entry.id)!
+  assert.match(edited.text, /Antwort: Ja\n\nSteht an der Karte\. Die Karte nennt keinen weiteren Schritt\.$/)
+  assert.equal(t.tg.sent.filter((m) => m.chat === OWNER).length, 0)
+})
+
+test('Gruppe: Textantwort mit Bemerkung im Thema Offen, fl0ws Nachricht verschwindet aus Offen', async () => {
+  const t = groupSetup()
+  t.board.issues.push(issue(1, { title: 'Entscheidung: X', description: 'Frage: Machen wir das?' }))
+  await ask(t)
+  const offen = t.tg.topic('Offen')!
+  await t.sayIn('ja, aber erst ab Montag', offen)
+  assert.equal(t.store.get(1)!.state, 'beantwortet')
+  assert.equal(t.store.get(1)!.bemerkung, 'aber erst ab Montag')
+  assert.ok(t.tg.deleted.some((d) => d.id === t.tg.inTopic('Offen')[0].id), 'Frage gelöscht')
+  assert.ok(t.tg.deleted.some((d) => d.id >= 7000), 'fl0ws Text gelöscht')
+  assert.match(t.tg.inTopic('Beantwortet')[0].text, /Antwort: Ja\nBemerkung: aber erst ab Montag/)
+})
+
+test('Gruppe: Bemerkung-Knopf, Antwort auf die Eingabe, Eingabe und Text werden aus Offen gelöscht', async () => {
+  const t = groupSetup()
+  t.board.issues.push(issue(1, { title: 'Entscheidung: X', description: 'Frage: Machen wir das?' }))
+  await ask(t)
+  const q = t.tg.inTopic('Offen')[0]
+  await t.pressIn('b:1', q)
+  const prompt = t.tg.sent.at(-1)!
+  assert.equal(prompt.thread, t.tg.topic('Offen'))
+  assert.equal(prompt.forceReply, true)
+  await t.sayIn('nur mit Vornamen', q.thread!, OWNER, prompt.id)
+  assert.equal(t.store.get(1)!.answer_kind, 'bemerkung')
+  const gone = t.tg.deleted.map((d) => d.id)
+  assert.ok(gone.includes(q.id) && gone.includes(prompt.id))
+  assert.match(t.tg.inTopic('Beantwortet')[0].text, /Bemerkung: nur mit Vornamen/)
+})
+
+test('Gruppe: Später verschiebt die Frage nach Später, am nächsten Tag steht sie wieder in Offen', async () => {
+  const t = groupSetup()
+  t.board.issues.push(issue(1, { title: 'Entscheidung: X', description: 'Frage: Machen wir das?' }))
+  await ask(t)
+  const q = t.tg.inTopic('Offen')[0]
+  await t.pressIn('s:1', q)
+  assert.ok(t.tg.deleted.some((d) => d.id === q.id), 'aus Offen gelöscht')
+  const waiting = t.tg.inTopic('Später')
+  assert.equal(waiting.length, 1)
+  assert.match(waiting[0].text, /Später: kommt am 26\.11\.2026, 09:00 Uhr wieder in Offen\.$/)
+  assert.deepEqual(t.buttons(waiting[0]), ['Jetzt fragen', 'Karte öffnen'])
+  t.advance(60 * 60_000)
+  await ask(t)
+  assert.equal(t.tg.inTopic('Offen').length, 1, 'nicht vor morgen')
+  t.advance(18 * 60 * 60_000 + 1)
+  await ask(t)
+  assert.equal(t.tg.inTopic('Offen').length, 2)
+  assert.equal(t.store.get(1)!.state, 'gesendet')
+  assert.ok(t.tg.deleted.some((d) => d.id === waiting[0].id), 'aus Später gelöscht')
+})
+
+test('Gruppe: Knopf und Text anderer Mitglieder werden ignoriert', async () => {
+  const t = groupSetup()
+  t.board.issues.push(issue(1, { title: 'Entscheidung: X', description: 'Frage: Machen wir das?' }))
+  await ask(t)
+  const q = t.tg.inTopic('Offen')[0]
+  const before = t.tg.sent.length
+  await t.pressIn('a:1:j', q, STRANGER)
+  await t.sayIn('ja', q.thread!, STRANGER)
+  await t.sayIn('/offen', q.thread!, STRANGER)
+  assert.equal(t.store.get(1)!.state, 'gesendet')
+  assert.equal(t.tg.sent.length, before)
+  assert.equal(t.tg.deleted.length, 0)
+  assert.equal(t.tg.callbacks.length, 0)
+})
+
+test('Gruppe nicht erreichbar: Frage kommt im privaten Chat, später zieht sie in die Gruppe um', async () => {
+  const t = groupSetup()
+  t.tg.down.add(FORUM)
+  t.board.issues.push(issue(1, { title: 'Entscheidung: X', description: 'Frage: Machen wir das?' }))
+  await ask(t)
+  const priv = t.tg.sent.filter((m) => m.chat === OWNER)
+  assert.equal(priv.length, 1)
+  assert.match(priv[0].text, /^Entscheidung für MS-1/)
+  assert.equal(t.bot.sendHealth(), null, 'privater Chat ist der Rückfall, kein Alarm')
+  t.tg.down.delete(FORUM)
+  t.advance(121_000)
+  await t.bot.sendDue()
+  assert.equal(t.tg.inTopic('Offen').length, 1)
+  assert.match(t.tg.lastEdit(priv[0].id)!.text, /Steht jetzt in der Gruppe im Thema Offen\.$/)
+  assert.equal(t.store.get(1)!.chat_id, FORUM)
+})
+
+test('Gruppe: Priorität steigt auf urgent, die Frage zieht von Offen nach Dringend; alte Fragen werden vor 48 Stunden neu gestellt', async () => {
+  const t = groupSetup()
+  t.board.issues.push(issue(1, { title: 'Entscheidung: X', description: 'Frage: Machen wir das?' }))
+  await ask(t)
+  const first = t.tg.inTopic('Offen')[0]
+  t.board.issues[0].priority = 'urgent'
+  await ask(t)
+  assert.equal(t.tg.inTopic('Dringend').length, 1)
+  assert.ok(t.tg.deleted.some((d) => d.id === first.id))
+  t.advance(41 * 3_600_000)
+  await ask(t)
+  assert.equal(t.tg.inTopic('Dringend').length, 2, 'neu gestellt, bevor Telegram nicht mehr löschen kann')
+  assert.ok(t.tg.deleted.some((d) => d.id === t.tg.inTopic('Dringend')[0].id))
+})
+
+test('Gruppe: Karte erledigt sich in Multica, die Frage verschwindet aus Offen', async () => {
+  const t = groupSetup()
+  t.board.issues.push(issue(1, { title: 'Entscheidung: X', description: 'Frage: Machen wir das?' }))
+  await ask(t)
+  t.board.issues[0].status = 'done'
+  await ask(t)
+  assert.equal(t.store.get(1)!.state, 'erledigt')
+  assert.ok(t.tg.deleted.some((d) => d.id === t.tg.inTopic('Offen')[0].id))
+})
+
+test('Gruppe: gelöschtes Thema wird beim nächsten Senden neu angelegt', async () => {
+  const t = groupSetup()
+  await ask(t)
+  const old = t.tg.topic('Offen')!
+  const send = t.tg.send.bind(t.tg)
+  t.tg.send = async (to, text, kb, fr) => {
+    if (to.thread === old) throw new Error('Bad Request: message thread not found')
+    return send(to, text, kb, fr)
+  }
+  t.board.issues.push(issue(1, { title: 'Entscheidung: X', description: 'Frage: Machen wir das?' }))
+  await ask(t)
+  assert.equal(t.tg.topics.filter((x) => x.name === 'Offen').length, 2)
+  assert.equal(t.store.get(1)!.thread_id, t.tg.topics.filter((x) => x.name === 'Offen')[1].thread)
+})
+
+test('Gruppe: das Ziel aus „ziel“ gilt nicht, solange die Gruppe eingestellt ist', async () => {
+  const t = groupSetup()
+  t.store.setKv('ziel', JSON.stringify({ fragen: { chat: -100777, thread: 5 }, nachAntwort: 'loeschen', beantwortet: null }))
+  t.board.issues.push(issue(1, { title: 'Entscheidung: X', description: 'Frage: Machen wir das?' }))
+  await ask(t)
+  assert.equal(t.tg.inTopic('Offen').length, 1)
+  assert.equal(t.tg.sent.filter((m) => m.chat === -100777).length, 0)
 })

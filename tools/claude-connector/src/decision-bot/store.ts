@@ -2,8 +2,8 @@
 //
 // Every question has one explicit state:
 //   neu          detected, not yet in Telegram
-//   gesendet     message with buttons is in fl0w's chat
-//   spaeter      fl0w tapped "Später"; sent again once `snooze_until` has passed
+//   gesendet     message with buttons is in Telegram (group topic Offen/Dringend, or the private chat)
+//   spaeter      fl0w tapped "Später"; sent again once `snooze_until` has passed (in the group it waits in topic Später)
 //   beantwortet  answer recorded, comment waits for the grace period (a Bemerkung can still join it);
 //                `commented_at` set = comment is on the card, only the next step is still due
 //   weitergegeben comment is on the card, next step triggered; a later Bemerkung goes as Nachtrag
@@ -53,6 +53,8 @@ export interface Row {
   post_error: string | null
   post_alarm_at: number | null
   closed_reason: string | null
+  /** Priority of the card; urgent and high go into the group topic Dringend (MS-4383). */
+  priority: string | null
 }
 
 const SCHEMA = `
@@ -107,6 +109,7 @@ const ADDED_COLUMNS = [
   ['chat_id', 'INTEGER'],
   ['thread_id', 'INTEGER'],
   ['confirm_chat_id', 'INTEGER'],
+  ['priority', 'TEXT'],
 ] as const
 
 type Raw = Record<string, unknown>
@@ -174,13 +177,13 @@ export class Store {
     return (this.db.prepare(`SELECT * FROM questions WHERE state IN (${marks}) ORDER BY id`).all(...states) as Raw[]).map((r) => norm(r)!)
   }
 
-  insert(q: Omit<Row, 'id' | 'state' | 'sent_at' | 'message_id' | 'chat_id' | 'thread_id' | 'snooze_until' | 'answer_kind' | 'answer_option' | 'bemerkung' | 'via' | 'answered_at' | 'last_input_at' | 'confirm_message_id' | 'confirm_chat_id' | 'commented_at' | 'posted_at' | 'next_step' | 'post_error' | 'post_alarm_at' | 'closed_reason'>): Row | null {
+  insert(q: Omit<Row, 'id' | 'state' | 'sent_at' | 'message_id' | 'chat_id' | 'thread_id' | 'snooze_until' | 'answer_kind' | 'answer_option' | 'bemerkung' | 'via' | 'answered_at' | 'last_input_at' | 'confirm_message_id' | 'confirm_chat_id' | 'commented_at' | 'posted_at' | 'next_step' | 'post_error' | 'post_alarm_at' | 'closed_reason' | 'priority'> & { priority?: string | null }): Row | null {
     const r = this.db
       .prepare(
-        `INSERT INTO questions (issue_id, identifier, project, hash, source, frage, empfehlung, optionen, quelle, done_after_answer, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (issue_id, hash) DO NOTHING`,
+        `INSERT INTO questions (issue_id, identifier, project, hash, source, frage, empfehlung, optionen, quelle, done_after_answer, created_at, priority)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (issue_id, hash) DO NOTHING`,
       )
-      .run(q.issue_id, q.identifier, q.project, q.hash, q.source, q.frage, q.empfehlung, JSON.stringify(q.optionen), q.quelle, q.done_after_answer ? 1 : 0, q.created_at)
+      .run(q.issue_id, q.identifier, q.project, q.hash, q.source, q.frage, q.empfehlung, JSON.stringify(q.optionen), q.quelle, q.done_after_answer ? 1 : 0, q.created_at, q.priority ?? null)
     return r.changes ? this.get(Number(r.lastInsertRowid)) : null
   }
 

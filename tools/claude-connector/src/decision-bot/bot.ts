@@ -7,14 +7,21 @@
 //   sendDue()  sends new and due postponed questions
 //   handle()   buttons and texts from fl0w; every other chat is ignored
 //   flush()    after the grace period the answer (with any Bemerkung) goes to the card
+//
+// Group mode (MS-4383): with `groupId` the questions go into fl0w's forum group, topics Offen
+// (Dringend for priority urgent/high), Später, Beantwortet and Bot-Status; the target set with
+// `ziel` (routing.ts) applies only without a group. An answered, postponed or closed question is
+// deleted from Offen/Dringend, so only open ones stay there. When the group cannot be reached the
+// private chat takes over, and the questions move into the group once it works again.
 import type { Comment, Issue, Project } from '../multica.ts'
 import { INACTIVE_PROJECT_STATUSES, OPEN_STATUSES, extractQuestion, externalQuestion, isCandidate, type Question } from './detect.ts'
-import { readRouting, type Routing } from './routing.ts'
+import { DEFAULT_ROUTING, readRouting, type Routing } from './routing.ts'
 import { ACTIVE, type Row, type Store } from './store.ts'
-import type { Target, Tg, TgMessage, TgUpdate } from './telegram.ts'
+import type { Keyboard, Target, Tg, TgMessage, TgUpdate } from './telegram.ts'
 import {
   type Answer,
   type AskedQuestion,
+  GROUP_HELP_TEXT,
   HELP_TEXT,
   NONE_OPEN_TEXT,
   answerHead,
@@ -23,11 +30,13 @@ import {
   commentText,
   confirmKeyboard,
   confirmText,
+  entryText,
   header,
   nachtragText,
   parseTextAnswer,
   questionKeyboard,
   questionText,
+  spaeterKeyboard,
   tomorrowNine,
 } from './texts.ts'
 
@@ -50,6 +59,8 @@ export interface BotDeps {
    * in the private chat or in a chat set as target (routing.ts).
    */
   ownerChatId: number
+  /** fl0w's forum group (MS-4383); null = private chat or the `ziel` setting. */
+  groupId?: number | null
   /** fl0w's Multica user id: comments by this member count as fl0w's answer. */
   flowUserId: string
   /** Card link that opens on the phone (Tailnet host). */
@@ -65,11 +76,21 @@ export interface BotDeps {
 const BEMERKUNG_WINDOW_MS = 30 * 60_000
 const NACHTRAG_WINDOW_MS = 15 * 60_000
 const POST_ALARM_MS = 30 * 60_000
+/** Telegram deletes nothing older than 48 hours, so group questions are posted anew before that. */
+const REFRESH_MS = 40 * 3_600_000
+const GROUP_PAUSE_MS = 120_000
+
+export const TOPICS = { offen: 'Offen', dringend: 'Dringend', spaeter: 'Später', beantwortet: 'Beantwortet', status: 'Bot-Status' } as const
+export type Topic = keyof typeof TOPICS
+const QUESTION_TOPICS: readonly Topic[] = ['offen', 'dringend', 'spaeter']
+const TOPIC_COLORS: Record<Topic, number> = { offen: 7322096, dringend: 16478047, spaeter: 16766590, beantwortet: 9367192, status: 13338331 }
+const URGENT = new Set(['urgent', 'high'])
 
 const asked = (r: Row): AskedQuestion => ({ identifier: r.identifier, project: r.project, frage: r.frage, empfehlung: r.empfehlung, optionen: r.optionen, quelle: r.quelle })
 const answerOf = (r: Row): Answer => ({ kind: r.answer_kind ?? 'bemerkung', option: r.answer_option, bemerkung: r.bemerkung })
 const errText = (err: unknown) => ((err as Error)?.message ?? String(err)).slice(0, 300)
 /** Topic of an incoming message; outside forum topics Telegram's thread id means a reply chain, not a target. */
+const topicGone = (err: unknown) => /thread not found|TOPIC_(ID_INVALID|DELETED|CLOSED)/i.test(errText(err))
 const targetOf = (m: { chat: { id: number } } & Pick<TgMessage, 'message_thread_id' | 'is_topic_message'>): Target => ({ chat: m.chat.id, thread: m.is_topic_message ? (m.message_thread_id ?? null) : null })
 
 export class DecisionBot {
@@ -82,17 +103,20 @@ export class DecisionBot {
   private sendFailing: { since: number; error: string } | null = null
   /** Chat and topic of the update being handled: replies go back there. */
   private inbound: Target | null = null
+  /** After a group error the private chat takes over for a little while. */
+  private groupPausedUntil = 0
 
   constructor(deps: BotDeps) {
-    this.d = { now: Date.now, graceMs: 120_000, log: () => {}, onLive: async () => {}, ...deps }
+    this.d = { now: Date.now, graceMs: 120_000, log: () => {}, onLive: async () => {}, groupId: null, ...deps }
   }
 
   private get now(): number {
     return this.d.now()
   }
 
+  /** The `ziel` setting; with a group (MS-4383) the topics decide, so it does not apply. */
   private routing(): Routing {
-    return readRouting(this.d.store)
+    return this.d.groupId ? DEFAULT_ROUTING : readRouting(this.d.store)
   }
 
   private get home(): Target {
@@ -106,6 +130,111 @@ export class DecisionBot {
   /** Chat of a stored message; rows written before chats were recorded are migrated by the store. */
   private chatOf(chat: number | null): number {
     return chat ?? this.d.ownerChatId
+  }
+
+  // ---------------------------------------------------------------- group topics (MS-4383)
+
+  private inGroup(chat: number | null | undefined): boolean {
+    return !!this.d.groupId && chat === this.d.groupId
+  }
+
+  private questionTopic(r: Row): Topic {
+    return r.state === 'spaeter' ? 'spaeter' : URGENT.has(r.priority ?? '') ? 'dringend' : 'offen'
+  }
+
+  private isQuestionTopic(thread: number | null): boolean {
+    return !!thread && QUESTION_TOPICS.some((t) => Number(this.d.store.getKv(`topic:${t}`) ?? 0) === thread)
+  }
+
+  private groupFailed(what: string, err: unknown): void {
+    this.groupPausedUntil = this.now + GROUP_PAUSE_MS
+    this.d.log(`gruppe ${what}: ${errText(err)}`)
+  }
+
+  /** The topic in the group, created on first use; null without group or while the group fails. */
+  private async topic(t: Topic): Promise<Target | null> {
+    const g = this.d.groupId
+    if (!g || this.now < this.groupPausedUntil) return null
+    let thread = Number(this.d.store.getKv(`topic:${t}`) ?? 0)
+    if (!thread) {
+      try {
+        thread = await this.d.tg.createTopic(g, TOPICS[t], TOPIC_COLORS[t])
+      } catch (err) {
+        this.groupFailed(`thema ${TOPICS[t]} anlegen`, err)
+        return null
+      }
+      this.d.store.setKv(`topic:${t}`, String(thread))
+      this.d.log(`thema ${TOPICS[t]} angelegt (${thread})`)
+    }
+    return { chat: g, thread }
+  }
+
+  /** Send into a group topic; null without group or when it fails. A deleted topic is created anew. */
+  private async postGroup(t: Topic, text: string, keyboard: Keyboard = null, forceReply = false): Promise<{ to: Target; id: number } | null> {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const to = await this.topic(t)
+      if (!to) return null
+      try {
+        return { to, id: await this.d.tg.send(to, text, keyboard, forceReply) }
+      } catch (err) {
+        if (attempt === 0 && topicGone(err)) {
+          this.d.store.setKv(`topic:${t}`, null)
+          continue
+        }
+        this.groupFailed(`senden in ${TOPICS[t]}`, err)
+        return null
+      }
+    }
+    return null
+  }
+
+  /** Group topic `t`; without group to `fallback`; group not reachable: fl0w's private chat. */
+  private async post(t: Topic, fallback: Target, text: string, keyboard: Keyboard = null, forceReply = false): Promise<{ to: Target; id: number }> {
+    const g = await this.postGroup(t, text, keyboard, forceReply)
+    if (g) return g
+    const to = this.d.groupId ? this.home : fallback
+    return { to, id: await this.d.tg.send(to, text, keyboard, forceReply) }
+  }
+
+  /** A question message in the group is deleted; elsewhere it is frozen with `text`. */
+  private async drop(r: Row, text: string): Promise<void> {
+    if (!r.message_id) return
+    if (this.inGroup(r.chat_id)) {
+      try {
+        await this.d.tg.delete(r.chat_id!, r.message_id)
+        return
+      } catch (err) {
+        this.d.log(`loeschen ${r.identifier}: ${errText(err)}`)
+      }
+    }
+    await this.d.tg.edit(this.chatOf(r.chat_id), r.message_id, text, null).catch((err) => this.d.log(`edit ${r.identifier}: ${errText(err)}`))
+  }
+
+  /** First contact with the group: all five topics exist, one greeting in Bot-Status. */
+  private async greetGroup(): Promise<void> {
+    if (!this.d.groupId || this.d.store.getKv('gruppe_begruesst')) return
+    for (const t of Object.keys(TOPICS) as Topic[]) if (!(await this.topic(t))) return
+    if (await this.postGroup('status', GROUP_HELP_TEXT)) this.d.store.setKv('gruppe_begruesst', String(this.now))
+  }
+
+  /**
+   * Questions in the wrong place move: from the private chat into the group once it works, between
+   * Offen and Dringend after a priority change, and anew before Telegram's 48-hour delete limit.
+   */
+  private async relocate(): Promise<void> {
+    if (!this.d.groupId) return
+    for (const r of this.d.store.inState('gesendet')) {
+      const t = this.questionTopic(r)
+      const want = await this.topic(t)
+      if (!want) return
+      if (r.chat_id === want.chat && r.thread_id === want.thread && (r.sent_at ?? 0) > this.now - REFRESH_MS) continue
+      const moved = await this.postGroup(t, questionText(asked(r)), questionKeyboard(r.id, r, this.d.link(r.identifier)))
+      if (!moved) return
+      this.d.store.update(r.id, { message_id: moved.id, chat_id: moved.to.chat, thread_id: moved.to.thread, sent_at: this.now }, ['gesendet'])
+      this.d.store.remember(moved.to.chat, moved.id, r.id, 'frage', this.now)
+      this.d.log(`verschoben ${r.identifier} nach ${TOPICS[t]}`)
+      await this.drop(r, `${questionText(asked(r), false)}\n\nSteht jetzt in der Gruppe im Thema ${TOPICS[t]}.`)
+    }
   }
 
   // ---------------------------------------------------------------- scan
@@ -152,6 +281,8 @@ export class DecisionBot {
         this.cache.set(i.id, hit)
       }
       const rows = this.d.store.inState(...ACTIVE).filter((r) => r.issue_id === i.id)
+      // A new priority moves the question between Offen and Dringend (relocate in sendDue).
+      for (const r of rows) if (r.priority !== i.priority) this.d.store.update(r.id, { priority: i.priority })
       for (const r of rows) {
         if (r.source === 'extern') continue
         if (!hit.q || r.hash !== hit.q.hash) {
@@ -172,6 +303,7 @@ export class DecisionBot {
         quelle: null,
         done_after_answer: hit.q.doneAfterAnswer,
         created_at: this.now,
+        priority: i.priority,
       })
       if (row) {
         added++
@@ -200,6 +332,7 @@ export class DecisionBot {
       quelle,
       done_after_answer: false,
       created_at: this.now,
+      priority: i.priority,
     })
     if (row) {
       // One open question per card: the outside question replaces what the scan found.
@@ -213,6 +346,10 @@ export class DecisionBot {
   private async close(r: Row, reason: string): Promise<void> {
     if (!this.d.store.update(r.id, { state: 'erledigt', closed_reason: reason }, [...ACTIVE])) return
     this.d.log(`erledigt ${r.identifier}: ${reason}`)
+    if (this.inGroup(r.chat_id)) {
+      if (r.state === 'gesendet' || r.state === 'spaeter') await this.drop(r, '')
+      return
+    }
     if (r.message_id && r.state === 'gesendet') {
       if (this.routing().nachAntwort !== 'behalten') return this.retire(r, `${questionText(asked(r), false)}\n\nErledigt, ${reason}.`)
       await this.d.tg.edit(this.chatOf(r.chat_id), r.message_id, `${questionText(asked(r))}\n\nErledigt, ${reason}. Die Knöpfe sind entfernt.`, null).catch((err) => this.d.log(`edit ${r.identifier}: ${errText(err)}`))
@@ -238,15 +375,17 @@ export class DecisionBot {
       }
     }
     const due = this.d.store.inState('neu', 'spaeter').filter((r) => r.state === 'neu' || (r.snooze_until ?? 0) <= this.now)
-    const to = this.questionTarget()
+    await this.greetGroup()
     for (const r of due) {
       try {
-        const id = await this.d.tg.send(to, questionText(asked(r)), questionKeyboard(r.id, r, this.d.link(r.identifier)))
+        const { to, id } = await this.post(URGENT.has(r.priority ?? '') ? 'dringend' : 'offen', this.questionTarget(), questionText(asked(r)), questionKeyboard(r.id, r, this.d.link(r.identifier)))
         this.sendFailing = null
         if (this.d.store.update(r.id, { state: 'gesendet', sent_at: this.now, message_id: id, chat_id: to.chat, thread_id: to.thread, snooze_until: null }, ['neu', 'spaeter'])) {
           this.d.store.remember(to.chat, id, r.id, 'frage', this.now)
           sent++
-          this.d.log(`gesendet ${r.identifier} (#${r.id})`)
+          this.d.log(`gesendet ${r.identifier} (#${r.id})${to.thread ? ` in Thema ${to.thread}` : ''}`)
+          // A postponed question leaves the topic Später.
+          if (this.inGroup(r.chat_id)) await this.drop(r, '')
         }
       } catch (err) {
         this.d.log(`senden ${r.identifier}: ${errText(err)}`)
@@ -254,6 +393,7 @@ export class DecisionBot {
         break
       }
     }
+    await this.relocate()
     return sent
   }
 
@@ -273,7 +413,7 @@ export class DecisionBot {
   private isOwner(fromId: number | undefined, chatId: number | undefined): boolean {
     if (fromId !== this.d.ownerChatId || chatId === undefined) return false
     const z = this.routing()
-    return chatId === this.d.ownerChatId || chatId === z.fragen?.chat || chatId === z.beantwortet?.chat
+    return chatId === this.d.ownerChatId || this.inGroup(chatId) || chatId === z.fragen?.chat || chatId === z.beantwortet?.chat
   }
 
   async handle(u: TgUpdate): Promise<void> {
@@ -296,11 +436,26 @@ export class DecisionBot {
     // fl0w writes (e.g. pressed Start): sending works again, try right away.
     this.sendPausedUntil = 0
     const text = (m.text ?? '').trim()
+    const group = this.inGroup(m.chat.id)
+    // Service messages of the group (topic created, member added) carry no text.
+    if (!text && group) return
     if (!text) return void (await this.reply('Hier kommt nur Text an der Karte an. Schreib deine Antwort bitte als Text.'))
     if (text.startsWith('/')) return this.onCommand(text)
 
     const replyTo = m.reply_to_message?.message_id
     const target = replyTo ? this.d.store.byMessage(m.chat.id, replyTo) : null
+    const prompt = target ? (target.kind === 'bemerkung' ? replyTo! : 0) : (this.pendingPrompt(m.chat.id) ?? 0)
+    try {
+      await this.onText(text, target)
+    } finally {
+      // Offen, Dringend and Später keep only open questions: fl0w's text and the Bemerkung prompt go.
+      if (group && this.isQuestionTopic(this.inbound.thread)) {
+        for (const id of [m.message_id, prompt]) if (id) await this.d.tg.delete(m.chat.id, id).catch((err) => this.d.log(`loeschen: ${errText(err)}`))
+      }
+    }
+  }
+
+  private async onText(text: string, target: { row: Row; kind: string } | null): Promise<void> {
     if (target) {
       if (target.kind === 'bemerkung' || !ACTIVE.includes(target.row.state)) return this.addBemerkung(target.row, text)
       return this.answerText(target.row, text)
@@ -315,12 +470,26 @@ export class DecisionBot {
     if (sent) return this.answerText(sent, text)
     const posted = latest(this.d.store.inState('weitergegeben'), 'posted_at')
     if (posted && (posted.posted_at ?? 0) > this.now - NACHTRAG_WINDOW_MS) return this.addBemerkung(posted, text)
-    await this.reply(NONE_OPEN_TEXT)
+    await this.replyHere(NONE_OPEN_TEXT)
   }
 
   /** Back to where fl0w wrote or tapped; without such an update to the question target. */
-  private async reply(text: string, keyboard: Parameters<Tg['send']>[2] = null): Promise<number> {
+  private async replyHere(text: string, keyboard: Keyboard = null): Promise<number> {
     return this.d.tg.send(this.inbound ?? this.questionTarget(), text, keyboard)
+  }
+
+  /** About an answer: in the group into Beantwortet, so the question topics keep only questions. */
+  private async reply(text: string, keyboard: Keyboard = null): Promise<number> {
+    if (this.inbound && this.inGroup(this.inbound.chat)) return (await this.post('beantwortet', this.home, text, keyboard)).id
+    return this.replyHere(text, keyboard)
+  }
+
+  /** The open Bemerkung prompt in this chat, deleted once fl0w has answered it. */
+  private pendingPrompt(chat: number): number | null {
+    const raw = this.d.store.getKv('bemerkung')
+    if (!raw) return null
+    const p = JSON.parse(raw) as { chat?: number; msg?: number }
+    return p.msg && p.chat === chat ? p.msg : null
   }
 
   private pendingBemerkung(): Row | null {
@@ -348,6 +517,7 @@ export class DecisionBot {
     if (action === 'a') {
       if (row.state === 'erledigt') {
         await this.d.tg.answerCallback(cb.id, 'In Multica schon erledigt.')
+        if (this.inGroup(row.chat_id)) return this.drop(row, '')
         if (row.message_id) await this.d.tg.edit(this.chatOf(row.chat_id), row.message_id, `${questionText(asked(row))}\n\nErledigt, ${row.closed_reason ?? 'in Multica'}.`, null).catch(() => {})
         return
       }
@@ -362,7 +532,7 @@ export class DecisionBot {
       const to = this.inbound ?? this.questionTarget()
       const id = await this.d.tg.send(to, `Bemerkung zu ${row.identifier}: schreib sie als Antwort auf diese Nachricht.`, null, true)
       this.d.store.remember(to.chat, id, row.id, 'bemerkung', this.now)
-      this.d.store.setKv('bemerkung', JSON.stringify({ id: row.id, at: this.now }))
+      this.d.store.setKv('bemerkung', JSON.stringify({ id: row.id, at: this.now, chat: to.chat, msg: id }))
       return
     }
     if (action === 's') {
@@ -370,6 +540,18 @@ export class DecisionBot {
       const until = tomorrowNine(this.now)
       this.d.store.update(row.id, { state: 'spaeter', snooze_until: until }, ['gesendet'])
       await this.d.tg.answerCallback(cb.id, 'Kommt morgen um 9 Uhr wieder.')
+      if (this.inGroup(row.chat_id)) {
+        // The question leaves Offen/Dringend and waits in the topic Später.
+        await this.drop(row, '')
+        const text = `${questionText(asked(row), false)}\n\nSpäter: kommt am ${berlin(until)} Uhr wieder in Offen.`
+        const moved = await this.post('spaeter', this.home, text, spaeterKeyboard(row.id, this.d.link(row.identifier))).catch((err) => {
+          this.d.log(`spaeter ${row.identifier}: ${errText(err)}`)
+          return null
+        })
+        this.d.store.update(row.id, moved ? { message_id: moved.id, chat_id: moved.to.chat, thread_id: moved.to.thread } : { message_id: null })
+        if (moved) this.d.store.remember(moved.to.chat, moved.id, row.id, 'frage', this.now)
+        return
+      }
       if (!row.message_id) return
       // Tidy targets: the postponed message goes, the question comes again as a new one.
       if (this.routing().nachAntwort !== 'behalten') await this.d.tg.delete(this.chatOf(row.chat_id), row.message_id).catch((err) => this.d.log(`loeschen ${row.identifier}: ${errText(err)}`))
@@ -382,7 +564,7 @@ export class DecisionBot {
       await this.d.tg.answerCallback(cb.id, 'Kommt sofort.')
       await this.sendDue()
     } else {
-      await this.d.tg.answerCallback(cb.id, row.state === 'gesendet' ? 'Steht schon im Chat, siehe weiter oben.' : 'Nicht mehr offen.')
+      await this.d.tg.answerCallback(cb.id, row.state === 'gesendet' ? (this.inGroup(row.chat_id) ? `Steht schon im Thema ${TOPICS[this.questionTopic(row)]}.` : 'Steht schon im Chat, siehe weiter oben.') : 'Nicht mehr offen.')
     }
   }
 
@@ -402,6 +584,14 @@ export class DecisionBot {
     if (!ok) return false
     this.clearPending(row.id)
     this.d.log(`antwort ${row.identifier}: ${a.kind}${a.option ? ` ${a.option}` : ''} per ${via}`)
+    if (this.inGroup(row.chat_id)) {
+      // Group: the question leaves Offen/Dringend/Später, the entry goes into Beantwortet.
+      await this.drop(row, '')
+      const { to, id } = await this.post('beantwortet', this.home, entryText(asked(row), a, now, Math.round(this.d.graceMs / 1000), null), confirmKeyboard(row.id, this.d.link(row.identifier)))
+      this.d.store.remember(to.chat, id, row.id, 'bestaetigung', now)
+      this.d.store.update(row.id, { confirm_message_id: id, confirm_chat_id: to.chat })
+      return true
+    }
     if (row.message_id) {
       await this.d.tg.edit(this.chatOf(row.chat_id), row.message_id, `${questionText(asked(row))}\n\nAntwort ${berlin(now)}: ${answerLine(row, a)}`, null).catch((err) => this.d.log(`edit ${row.identifier}: ${errText(err)}`))
     }
@@ -453,7 +643,11 @@ export class DecisionBot {
         this.d.log(`weitergegeben ${r.identifier}: ${step}`)
         done++
         const cur = this.d.store.get(r.id)!
-        if (this.routing().nachAntwort !== 'behalten') {
+        if (cur.confirm_message_id && this.inGroup(cur.confirm_chat_id)) {
+          await this.d.tg
+            .edit(cur.confirm_chat_id!, cur.confirm_message_id, entryText(asked(cur), answerOf(cur), cur.answered_at ?? this.now, 0, `Steht an der Karte. ${step}`), confirmKeyboard(r.id, this.d.link(r.identifier)))
+            .catch(() => {})
+        } else if (this.routing().nachAntwort !== 'behalten') {
           await this.retire(cur, `${questionText(asked(cur), false)}\n\nAntwort ${berlin(cur.answered_at ?? this.now)}: ${answerLine(cur, answerOf(cur))}\nSteht an der Karte. ${step}`)
         } else if (r.confirm_message_id) {
           await this.d.tg
@@ -467,7 +661,7 @@ export class DecisionBot {
         if (!r.post_alarm_at && (r.answered_at ?? 0) < this.now - POST_ALARM_MS) {
           this.d.store.update(r.id, { post_alarm_at: this.now })
           const what = this.d.store.get(r.id)?.commented_at ? 'steht an der Karte, aber der nächste Schritt klappt seit 30 Minuten nicht' : 'ist seit 30 Minuten nicht in Multica angekommen'
-          await this.reply(`Deine Antwort zu ${r.identifier} ${what} (${e}). Ich versuche es weiter, du musst nichts tun.`).catch(() => {})
+          await this.post('status', this.questionTarget(), `Deine Antwort zu ${r.identifier} ${what} (${e}). Ich versuche es weiter, du musst nichts tun.`).catch(() => {})
         }
       }
     }
@@ -527,7 +721,7 @@ export class DecisionBot {
   private async onCommand(text: string): Promise<void> {
     const cmd = text.split(/[\s@]/)[0].toLowerCase()
     if (cmd === '/offen') return this.sendOpenList()
-    await this.reply(HELP_TEXT)
+    await this.replyHere(this.d.groupId ? GROUP_HELP_TEXT : HELP_TEXT)
   }
 
   /** /offen: a fresh scan, then every open decision with a link; postponed ones can be asked now. */
@@ -538,15 +732,15 @@ export class DecisionBot {
       this.d.log(`scan fuer /offen: ${errText(err)}`)
     }
     const rows = this.d.store.inState(...ACTIVE, 'beantwortet')
-    if (!rows.length) return void (await this.reply('Keine offenen Entscheidungen in den aktiven Projekten.'))
+    if (!rows.length) return void (await this.replyHere('Keine offenen Entscheidungen in den aktiven Projekten.'))
     const lines = rows.map((r) => {
-      const stand = r.state === 'spaeter' ? `später, kommt ${berlin(r.snooze_until ?? 0)}` : r.state === 'beantwortet' ? (r.commented_at ? 'steht an der Karte, nächster Schritt folgt' : 'beantwortet, geht gleich an die Karte') : r.state === 'neu' ? 'kommt gleich' : 'steht im Chat'
+      const stand = r.state === 'spaeter' ? `später, kommt ${berlin(r.snooze_until ?? 0)}` : r.state === 'beantwortet' ? (r.commented_at ? 'steht an der Karte, nächster Schritt folgt' : 'beantwortet, geht gleich an die Karte') : r.state === 'neu' ? 'kommt gleich' : this.inGroup(r.chat_id) ? `steht in ${TOPICS[this.questionTopic(r)]}` : 'steht im Chat'
       return `• ${header(r).replace('Entscheidung für ', '')}: ${r.frage.slice(0, 140)} (${stand})`
     })
     const keyboard = rows.slice(0, 30).map((r) => [
       { text: `${r.identifier} öffnen`, url: this.d.link(r.identifier) },
       ...(r.state === 'spaeter' ? [{ text: `${r.identifier} jetzt fragen`, callback_data: `n:${r.id}` }] : []),
     ])
-    await this.reply(`Offene Entscheidungen (${rows.length}):\n\n${lines.join('\n')}`.slice(0, 4000), keyboard)
+    await this.replyHere(`Offene Entscheidungen (${rows.length}):\n\n${lines.join('\n')}`.slice(0, 4000), keyboard)
   }
 }
