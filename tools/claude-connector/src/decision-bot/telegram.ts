@@ -17,6 +17,8 @@ export interface TgUser {
 
 export interface TgMessage {
   message_id: number
+  /** Topic of a forum group; plain topic messages also "reply" to the topic's first message. */
+  message_thread_id?: number
   chat: { id: number; type: string }
   from?: TgUser
   text?: string
@@ -26,16 +28,19 @@ export interface TgMessage {
 export interface TgUpdate {
   update_id: number
   message?: TgMessage
-  callback_query?: { id: string; from: TgUser; message?: { message_id: number; chat: { id: number } }; data?: string }
+  callback_query?: { id: string; from: TgUser; message?: { message_id: number; message_thread_id?: number; chat: { id: number } }; data?: string }
 }
 
 export type Keyboard = Button[][] | null
 
 /** What the bot needs from Telegram; the fake in the tests implements the same. */
 export interface Tg {
-  send(chatId: number, text: string, keyboard?: Keyboard, forceReply?: boolean): Promise<number>
+  send(chatId: number, text: string, keyboard?: Keyboard, forceReply?: boolean, threadId?: number | null): Promise<number>
   edit(chatId: number, messageId: number, text: string, keyboard?: Keyboard): Promise<void>
   answerCallback(id: string, text?: string): Promise<void>
+  delete(chatId: number, messageId: number): Promise<void>
+  /** Creates a forum topic and returns its message_thread_id. */
+  createTopic(chatId: number, name: string, iconColor?: number): Promise<number>
 }
 
 export class TelegramApi implements Tg {
@@ -72,8 +77,9 @@ export class TelegramApi implements Tg {
     await this.call('setMyCommands', { commands: [{ command: 'offen', description: 'Alle offenen Entscheidungen' }, { command: 'hilfe', description: 'So antwortest du' }] })
   }
 
-  async send(chatId: number, text: string, keyboard?: Keyboard, forceReply = false): Promise<number> {
+  async send(chatId: number, text: string, keyboard?: Keyboard, forceReply = false, threadId: number | null = null): Promise<number> {
     const body: Record<string, unknown> = { chat_id: chatId, text, link_preview_options: { is_disabled: true } }
+    if (threadId) body.message_thread_id = threadId
     if (forceReply) body.reply_markup = { force_reply: true, input_field_placeholder: 'Bemerkung' }
     else if (keyboard?.length) body.reply_markup = { inline_keyboard: keyboard }
     const m = await this.call<{ message_id: number }>('sendMessage', body)
@@ -97,5 +103,14 @@ export class TelegramApi implements Tg {
 
   async answerCallback(id: string, text?: string): Promise<void> {
     await this.call('answerCallbackQuery', text ? { callback_query_id: id, text } : { callback_query_id: id })
+  }
+
+  async delete(chatId: number, messageId: number): Promise<void> {
+    await this.call('deleteMessage', { chat_id: chatId, message_id: messageId })
+  }
+
+  async createTopic(chatId: number, name: string, iconColor?: number): Promise<number> {
+    const t = await this.call<{ message_thread_id: number }>('createForumTopic', iconColor ? { chat_id: chatId, name, icon_color: iconColor } : { chat_id: chatId, name })
+    return t.message_thread_id
   }
 }

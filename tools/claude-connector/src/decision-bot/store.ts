@@ -2,13 +2,14 @@
 //
 // Every question has one explicit state:
 //   neu          detected, not yet in Telegram
-//   gesendet     message with buttons is in fl0w's chat
-//   spaeter      fl0w tapped "Später"; sent again once `snooze_until` has passed
+//   gesendet     message with buttons is in Telegram (group topic Offen/Dringend, or fl0w's private chat)
+//   spaeter      fl0w tapped "Später"; sent again once `snooze_until` has passed (in the group it waits in topic Später)
 //   beantwortet  answer recorded, comment waits for the grace period (a Bemerkung can still join it);
 //                `commented_at` set = comment is on the card, only the next step is still due
 //   weitergegeben comment is on the card, next step triggered; a later Bemerkung goes as Nachtrag
 //   erledigt     the card no longer asks (status, project paused, fl0w answered in Multica)
 // The same question on the same card (issue_id + hash) exists once, so it is never asked twice.
+// Where a message sits: `chat_key` 0 (or null) = fl0w's private chat, otherwise the group's chat id (MS-4383).
 import { chmodSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -48,6 +49,10 @@ export interface Row {
   post_error: string | null
   post_alarm_at: number | null
   closed_reason: string | null
+  priority: string | null
+  chat_key: number | null
+  thread_id: number | null
+  confirm_chat: number | null
 }
 
 const SCHEMA = `
@@ -84,10 +89,12 @@ CREATE TABLE IF NOT EXISTS questions (
   UNIQUE (issue_id, hash)
 );
 CREATE TABLE IF NOT EXISTS messages (
-  message_id  INTEGER PRIMARY KEY,
+  chat_key    INTEGER NOT NULL DEFAULT 0,
+  message_id  INTEGER NOT NULL,
   question_id INTEGER NOT NULL,
   kind        TEXT NOT NULL,
-  created_at  INTEGER NOT NULL
+  created_at  INTEGER NOT NULL,
+  PRIMARY KEY (chat_key, message_id)
 );
 CREATE TABLE IF NOT EXISTS kv (
   key   TEXT PRIMARY KEY,
@@ -95,7 +102,13 @@ CREATE TABLE IF NOT EXISTS kv (
 );
 `
 /** Columns added after the first release; databases created before get them on open. */
-const ADDED_COLUMNS = [['commented_at', 'INTEGER']] as const
+const ADDED_COLUMNS = [
+  ['commented_at', 'INTEGER'],
+  ['priority', 'TEXT'],
+  ['chat_key', 'INTEGER'],
+  ['thread_id', 'INTEGER'],
+  ['confirm_chat', 'INTEGER'],
+] as const
 
 type Raw = Record<string, unknown>
 
@@ -118,6 +131,14 @@ export class Store {
     this.db.exec(SCHEMA)
     const have = new Set((this.db.prepare('PRAGMA table_info(questions)').all() as { name: string }[]).map((c) => c.name))
     for (const [col, type] of ADDED_COLUMNS) if (!have.has(col)) this.db.exec(`ALTER TABLE questions ADD COLUMN ${col} ${type}`)
+    // Message ids are only unique per chat; the first release keyed them alone (all in the private chat).
+    const msgCols = new Set((this.db.prepare('PRAGMA table_info(messages)').all() as { name: string }[]).map((c) => c.name))
+    if (!msgCols.has('chat_key')) {
+      this.db.exec(`ALTER TABLE messages RENAME TO messages_v1;
+        CREATE TABLE messages (chat_key INTEGER NOT NULL DEFAULT 0, message_id INTEGER NOT NULL, question_id INTEGER NOT NULL, kind TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (chat_key, message_id));
+        INSERT INTO messages SELECT 0, message_id, question_id, kind, created_at FROM messages_v1;
+        DROP TABLE messages_v1;`)
+    }
   }
 
   get(id: number): Row | null {
@@ -133,13 +154,13 @@ export class Store {
     return (this.db.prepare(`SELECT * FROM questions WHERE state IN (${marks}) ORDER BY id`).all(...states) as Raw[]).map((r) => norm(r)!)
   }
 
-  insert(q: Omit<Row, 'id' | 'state' | 'sent_at' | 'message_id' | 'snooze_until' | 'answer_kind' | 'answer_option' | 'bemerkung' | 'via' | 'answered_at' | 'last_input_at' | 'confirm_message_id' | 'commented_at' | 'posted_at' | 'next_step' | 'post_error' | 'post_alarm_at' | 'closed_reason'>): Row | null {
+  insert(q: Omit<Row, 'id' | 'state' | 'sent_at' | 'message_id' | 'snooze_until' | 'answer_kind' | 'answer_option' | 'bemerkung' | 'via' | 'answered_at' | 'last_input_at' | 'confirm_message_id' | 'commented_at' | 'posted_at' | 'next_step' | 'post_error' | 'post_alarm_at' | 'closed_reason' | 'chat_key' | 'thread_id' | 'confirm_chat'>): Row | null {
     const r = this.db
       .prepare(
-        `INSERT INTO questions (issue_id, identifier, project, hash, source, frage, empfehlung, optionen, quelle, done_after_answer, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (issue_id, hash) DO NOTHING`,
+        `INSERT INTO questions (issue_id, identifier, project, hash, source, frage, empfehlung, optionen, quelle, done_after_answer, created_at, priority)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (issue_id, hash) DO NOTHING`,
       )
-      .run(q.issue_id, q.identifier, q.project, q.hash, q.source, q.frage, q.empfehlung, JSON.stringify(q.optionen), q.quelle, q.done_after_answer ? 1 : 0, q.created_at)
+      .run(q.issue_id, q.identifier, q.project, q.hash, q.source, q.frage, q.empfehlung, JSON.stringify(q.optionen), q.quelle, q.done_after_answer ? 1 : 0, q.created_at, q.priority)
     return r.changes ? this.get(Number(r.lastInsertRowid)) : null
   }
 
@@ -161,12 +182,12 @@ export class Store {
     return this.db.prepare(sql).run(...args).changes === 1
   }
 
-  remember(messageId: number, questionId: number, kind: 'frage' | 'bestaetigung' | 'bemerkung', at: number): void {
-    this.db.prepare('INSERT OR REPLACE INTO messages (message_id, question_id, kind, created_at) VALUES (?, ?, ?, ?)').run(messageId, questionId, kind, at)
+  remember(chatKey: number, messageId: number, questionId: number, kind: 'frage' | 'bestaetigung' | 'bemerkung', at: number): void {
+    this.db.prepare('INSERT OR REPLACE INTO messages (chat_key, message_id, question_id, kind, created_at) VALUES (?, ?, ?, ?, ?)').run(chatKey, messageId, questionId, kind, at)
   }
 
-  byMessage(messageId: number): { row: Row; kind: string } | null {
-    const m = this.db.prepare('SELECT question_id, kind FROM messages WHERE message_id = ?').get(messageId) as { question_id: number; kind: string } | undefined
+  byMessage(chatKey: number, messageId: number): { row: Row; kind: string } | null {
+    const m = this.db.prepare('SELECT question_id, kind FROM messages WHERE chat_key = ? AND message_id = ?').get(chatKey, messageId) as { question_id: number; kind: string } | undefined
     const row = m ? this.get(m.question_id) : null
     return row && m ? { row, kind: m.kind } : null
   }

@@ -155,3 +155,29 @@ export const HELP_TEXT = [
   '„Später“ stellt die Frage morgen um 9 Uhr noch einmal.',
   '/offen zeigt alle offenen Entscheidungen.',
 ].join('\n')
+
+/** Buttons of a postponed question waiting in the group topic "Später" (MS-4383). */
+export function spaeterKeyboard(id: number, link: string): Button[][] {
+  return [[{ text: 'Jetzt fragen', callback_data: `n:${id}` }, { text: 'Karte öffnen', url: link }]]
+}
+
+/**
+ * Entry in the group topic "Beantwortet" (MS-4383): card, question, answer, Bemerkung, time.
+ * `step` null = the comment is still waiting for a Bemerkung; otherwise what happened on the card.
+ */
+export function entryText(q: AskedQuestion, a: Answer, answeredAtMs: number, graceSec: number, step: string | null): string {
+  const lines = [`${header(q).replace('Entscheidung für ', 'Beantwortet: ')}, ${berlin(answeredAtMs)} Uhr`, `Frage: ${q.frage}`]
+  if (a.kind !== 'bemerkung') lines.push(`Antwort: ${answerHead(q, a)}`)
+  if (a.bemerkung) lines.push(`Bemerkung: ${a.bemerkung}`)
+  const wann = graceSec >= 60 ? `in ${Math.round(graceSec / 60)} Minuten` : `in ${graceSec} Sekunden`
+  lines.push('', step ?? `Geht ${wann} als Kommentar an die Karte. Eine Bemerkung kannst du bis dahin und auch danach nachschieben: Knopf „Bemerkung nachschieben“ oder auf diese Nachricht antworten.`)
+  return lines.join('\n').slice(0, 4000)
+}
+
+export const GROUP_HELP_TEXT = [
+  'Der Entscheidungs-Bot schreibt ab jetzt in diese Gruppe.',
+  'Offen: Fragen, die deine Antwort brauchen. Dringend: Fragen von Karten mit Priorität urgent oder high.',
+  'Später: zurückgestellte Fragen, sie kommen am nächsten Tag um 9 Uhr wieder in Offen.',
+  'Beantwortet: je Antwort ein Eintrag. Bot-Status: nur Fehler des Bots.',
+  'Antworten wie bisher per Knopf oder als Text im Thema der Frage. Nur deine Antworten zählen. /offen zeigt alle offenen Entscheidungen.',
+].join('\n')
