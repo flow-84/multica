@@ -4,7 +4,8 @@
 //   neu          detected, not yet in Telegram
 //   gesendet     message with buttons is in fl0w's chat
 //   spaeter      fl0w tapped "Später"; sent again once `snooze_until` has passed
-//   beantwortet  answer recorded, comment waits for the grace period (a Bemerkung can still join it)
+//   beantwortet  answer recorded, comment waits for the grace period (a Bemerkung can still join it);
+//                `commented_at` set = comment is on the card, only the next step is still due
 //   weitergegeben comment is on the card, next step triggered; a later Bemerkung goes as Nachtrag
 //   erledigt     the card no longer asks (status, project paused, fl0w answered in Multica)
 // The same question on the same card (issue_id + hash) exists once, so it is never asked twice.
@@ -41,6 +42,7 @@ export interface Row {
   answered_at: number | null
   last_input_at: number | null
   confirm_message_id: number | null
+  commented_at: number | null
   posted_at: number | null
   next_step: string | null
   post_error: string | null
@@ -73,6 +75,7 @@ CREATE TABLE IF NOT EXISTS questions (
   answered_at        INTEGER,
   last_input_at      INTEGER,
   confirm_message_id INTEGER,
+  commented_at       INTEGER,
   posted_at          INTEGER,
   next_step          TEXT,
   post_error         TEXT,
@@ -91,6 +94,8 @@ CREATE TABLE IF NOT EXISTS kv (
   value TEXT NOT NULL
 );
 `
+/** Columns added after the first release; databases created before get them on open. */
+const ADDED_COLUMNS = [['commented_at', 'INTEGER']] as const
 
 type Raw = Record<string, unknown>
 
@@ -111,6 +116,8 @@ export class Store {
     if (path !== ':memory:') chmodSync(path, 0o600)
     this.db.exec('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;')
     this.db.exec(SCHEMA)
+    const have = new Set((this.db.prepare('PRAGMA table_info(questions)').all() as { name: string }[]).map((c) => c.name))
+    for (const [col, type] of ADDED_COLUMNS) if (!have.has(col)) this.db.exec(`ALTER TABLE questions ADD COLUMN ${col} ${type}`)
   }
 
   get(id: number): Row | null {
@@ -126,7 +133,7 @@ export class Store {
     return (this.db.prepare(`SELECT * FROM questions WHERE state IN (${marks}) ORDER BY id`).all(...states) as Raw[]).map((r) => norm(r)!)
   }
 
-  insert(q: Omit<Row, 'id' | 'state' | 'sent_at' | 'message_id' | 'snooze_until' | 'answer_kind' | 'answer_option' | 'bemerkung' | 'via' | 'answered_at' | 'last_input_at' | 'confirm_message_id' | 'posted_at' | 'next_step' | 'post_error' | 'post_alarm_at' | 'closed_reason'>): Row | null {
+  insert(q: Omit<Row, 'id' | 'state' | 'sent_at' | 'message_id' | 'snooze_until' | 'answer_kind' | 'answer_option' | 'bemerkung' | 'via' | 'answered_at' | 'last_input_at' | 'confirm_message_id' | 'commented_at' | 'posted_at' | 'next_step' | 'post_error' | 'post_alarm_at' | 'closed_reason'>): Row | null {
     const r = this.db
       .prepare(
         `INSERT INTO questions (issue_id, identifier, project, hash, source, frage, empfehlung, optionen, quelle, done_after_answer, created_at)

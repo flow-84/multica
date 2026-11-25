@@ -344,7 +344,7 @@ export class DecisionBot {
   }
 
   private async answerText(row: Row, text: string): Promise<void> {
-    const a = parseTextAnswer(text)
+    const a = parseTextAnswer(text, row.optionen)
     if (!(await this.record(row, a, 'text'))) await this.addBemerkung(this.d.store.get(row.id)!, text)
   }
 
@@ -380,7 +380,7 @@ export class DecisionBot {
       await this.record(row, { kind: 'bemerkung', option: null, bemerkung: t }, 'text')
       return
     }
-    if (row.state === 'beantwortet') {
+    if (row.state === 'beantwortet' && !row.commented_at) {
       const bemerkung = [row.bemerkung, t].filter(Boolean).join('\n')
       this.d.store.update(row.id, { bemerkung, last_input_at: this.now }, ['beantwortet'])
       await this.reply(`Verstanden für ${row.identifier}: Bemerkung „${t}“. Sie geht zusammen mit deiner Antwort an die Karte.\nFrage: ${row.frage}`)
@@ -419,17 +419,24 @@ export class DecisionBot {
         this.d.log(`weitergabe ${r.identifier}: ${e}`)
         if (!r.post_alarm_at && (r.answered_at ?? 0) < this.now - POST_ALARM_MS) {
           this.d.store.update(r.id, { post_alarm_at: this.now })
-          await this.reply(`Deine Antwort zu ${r.identifier} ist seit 30 Minuten nicht in Multica angekommen (${e}). Ich versuche es weiter, du musst nichts tun.`).catch(() => {})
+          const what = this.d.store.get(r.id)?.commented_at ? 'steht an der Karte, aber der nächste Schritt klappt seit 30 Minuten nicht' : 'ist seit 30 Minuten nicht in Multica angekommen'
+          await this.reply(`Deine Antwort zu ${r.identifier} ${what} (${e}). Ich versuche es weiter, du musst nichts tun.`).catch(() => {})
         }
       }
     }
     return done
   }
 
-  /** Comment as fl0w, then what the card itself foresees. Returns a sentence for fl0w. */
+  /**
+   * Comment as fl0w, then what the card itself foresees. Returns a sentence for fl0w.
+   * `commented_at` marks the comment as posted, so a retry after a failed next step never posts it twice.
+   */
   private async deliver(r: Row): Promise<string> {
     const b = this.d.board()
-    await b.addComment(r.issue_id, commentText(asked(r), answerOf(r), r.via ?? 'text', r.answered_at ?? this.now))
+    if (!r.commented_at) {
+      await b.addComment(r.issue_id, commentText(asked(r), answerOf(r), r.via ?? 'text', r.answered_at ?? this.now))
+      this.d.store.update(r.id, { commented_at: this.now })
+    }
     const i = await b.getIssue(r.issue_id)
     if (i.assignee_type === 'agent' || i.assignee_type === 'squad') {
       // fl0w's comment wakes the assigned agent; a blocked card goes back into the queue.
