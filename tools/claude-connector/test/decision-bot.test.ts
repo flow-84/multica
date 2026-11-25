@@ -6,7 +6,12 @@ import type { Comment, Issue, Project } from '../src/multica.ts'
 import { DecisionBot, type Board } from '../src/decision-bot/bot.ts'
 import { extractQuestion, parseFrageStyle } from '../src/decision-bot/detect.ts'
 import { Store } from '../src/decision-bot/store.ts'
-import type { Keyboard, Tg, TgUpdate } from '../src/decision-bot/telegram.ts'
+import { applyFlags, DEFAULT_ROUTING, readRouting, writeRouting } from '../src/decision-bot/routing.ts'
+import type { Keyboard, Target, Tg, TgUpdate } from '../src/decision-bot/telegram.ts'
+import { DatabaseSync } from 'node:sqlite'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { parseTextAnswer, tomorrowNine } from '../src/decision-bot/texts.ts'
 
 const FLOW = '46ece536-d531-4ef9-a493-be97b0118e06'
@@ -112,29 +117,38 @@ class FakeBoard implements Board {
 interface Sent {
   id: number
   chat: number
+  thread: number | null
   text: string
   keyboard: Keyboard | undefined
   forceReply: boolean
-  thread: number | null
 }
 
 class FakeTg implements Tg {
   sent: Sent[] = []
   edits: { id: number; text: string; keyboard: Keyboard | undefined }[] = []
-  callbacks: { id: string; text?: string }[] = []
   deleted: { chat: number; id: number }[] = []
+  callbacks: { id: string; text?: string }[] = []
   topics: { chat: number; name: string; thread: number }[] = []
   /** Chats that refuse every call (group not reachable). */
   down = new Set<number>()
   next = 100
-  async send(chat: number, text: string, keyboard?: Keyboard, forceReply = false, thread: number | null = null) {
-    if (this.down.has(chat)) throw new Error('Bad Request: chat not found')
+  async send(to: Target, text: string, keyboard?: Keyboard, forceReply = false) {
+    if (this.down.has(to.chat)) throw new Error('Bad Request: chat not found')
     const id = this.next++
-    this.sent.push({ id, chat, text, keyboard, forceReply, thread })
+    this.sent.push({ id, chat: to.chat, thread: to.thread, text, keyboard, forceReply })
     return id
   }
   async delete(chat: number, id: number) {
     this.deleted.push({ chat, id })
+  }
+  async edit(_chat: number, id: number, text: string, keyboard?: Keyboard) {
+    this.edits.push({ id, text, keyboard })
+  }
+  async answerCallback(id: string, text?: string) {
+    this.callbacks.push({ id, text })
+  }
+  lastEdit(id: number) {
+    return this.edits.filter((e) => e.id === id).at(-1)
   }
   async createTopic(chat: number, name: string) {
     if (this.down.has(chat)) throw new Error('Bad Request: chat not found')
@@ -147,15 +161,6 @@ class FakeTg implements Tg {
   }
   inTopic(name: string) {
     return this.sent.filter((m) => m.thread === this.topic(name))
-  }
-  async edit(_chat: number, id: number, text: string, keyboard?: Keyboard) {
-    this.edits.push({ id, text, keyboard })
-  }
-  async answerCallback(id: string, text?: string) {
-    this.callbacks.push({ id, text })
-  }
-  lastEdit(id: number) {
-    return this.edits.filter((e) => e.id === id).at(-1)
   }
 }
 
@@ -529,21 +534,181 @@ test('Go-live wird genau einmal gemeldet, mit der Zahl offener Fragen', async ()
   assert.deepEqual(calls, [1])
 })
 
+// ---------------------------------------------------------------- Ziel und nach der Antwort (MS-4383 vorbereitet)
+
+const GROUP = -1001234567890
+const T_OFFEN = 7
+const T_BEANTWORTET = 9
+
+/** A tap or a text by `from` in a forum topic of `chat`. */
+function inGroup(t: ReturnType<typeof setup>, chat = GROUP, thread = T_OFFEN) {
+  let upd = 10_000
+  return {
+    press: (data: string, messageId: number, from = OWNER) =>
+      t.bot.handle({ update_id: upd++, callback_query: { id: `g${upd}`, from: { id: from }, message: { message_id: messageId, chat: { id: chat }, message_thread_id: thread, is_topic_message: true }, data } }),
+    say: (text: string, from = OWNER, replyTo?: number) =>
+      t.bot.handle({
+        update_id: upd++,
+        message: { message_id: 20_000 + upd, chat: { id: chat, type: 'supergroup' }, message_thread_id: thread, is_topic_message: true, from: { id: from }, text, ...(replyTo ? { reply_to_message: { message_id: replyTo } } : {}) },
+      }),
+  }
+}
+
+test('Ziel einstellbar: Frage geht in Chat und Thema, Knopf und Bestätigung dort, Fremde und fremde Gruppen ignoriert', async () => {
+  const t = setup()
+  writeRouting(t.store, applyFlags(readRouting(t.store), { chat: String(GROUP), thema: String(T_OFFEN) }))
+  t.board.issues.push(issue(4276, { title: 'E5 Konten', description: MS4276 }))
+  await ask(t)
+  const q = t.tg.sent[0]
+  assert.deepEqual([q.chat, q.thread], [GROUP, T_OFFEN])
+  assert.deepEqual([t.store.get(1)!.chat_id, t.store.get(1)!.thread_id], [GROUP, T_OFFEN])
+
+  const g = inGroup(t)
+  await g.press('a:1:oa', q.id, STRANGER)
+  await inGroup(t, -100999, T_OFFEN).press('a:1:oa', q.id)
+  assert.equal(t.store.get(1)!.state, 'gesendet', 'fremdes Konto und fremde Gruppe ändern nichts')
+
+  await g.press('a:1:oa', q.id)
+  assert.equal(t.store.get(1)!.state, 'beantwortet')
+  const confirm = t.tg.sent.at(-1)!
+  assert.deepEqual([confirm.chat, confirm.thread], [GROUP, T_OFFEN])
+  assert.match(confirm.text, /^Verstanden für MS-4276: Option \(a\)/)
+  // Reply to the confirmation in the group: Bemerkung joins the answer.
+  await g.say('aber erst ab Montag', OWNER, confirm.id)
+  t.advance(121_000)
+  assert.equal(await t.bot.flush(), 1)
+  assert.match(t.board.written[0].content, /Bemerkung: aber erst ab Montag/)
+})
+
+test('Gleiche Nachrichten-ID in zwei Chats gehört zu zwei verschiedenen Fragen', () => {
+  const store = new Store(':memory:')
+  const a = store.insert({ issue_id: 'i1', identifier: 'MS-1', project: null, hash: 'h1', source: 'titel', frage: 'A?', empfehlung: null, optionen: [], quelle: null, done_after_answer: false, created_at: 0 })!
+  const b = store.insert({ issue_id: 'i2', identifier: 'MS-2', project: null, hash: 'h2', source: 'titel', frage: 'B?', empfehlung: null, optionen: [], quelle: null, done_after_answer: false, created_at: 0 })!
+  store.remember(OWNER, 42, a.id, 'frage', 0)
+  store.remember(GROUP, 42, b.id, 'frage', 0)
+  assert.equal(store.byMessage(OWNER, 42)!.row.identifier, 'MS-1')
+  assert.equal(store.byMessage(GROUP, 42)!.row.identifier, 'MS-2')
+})
+
+test('Nach der Antwort löschen: Frage und Bestätigung verschwinden, sobald die Antwort an der Karte steht', async () => {
+  const t = setup()
+  writeRouting(t.store, { ...DEFAULT_ROUTING, nachAntwort: 'loeschen' })
+  t.board.issues.push(issue(1, { title: 'Entscheidung: X', description: 'Frage: Machen wir das?' }))
+  await ask(t)
+  const q = t.tg.sent[0]
+  await t.press('a:1:j')
+  const confirm = t.tg.sent.at(-1)!
+  assert.deepEqual(t.tg.deleted, [], 'vor dem Kommentar wird nichts gelöscht')
+  t.advance(121_000)
+  await t.bot.flush()
+  assert.equal(t.board.written.length, 1)
+  assert.deepEqual(t.tg.deleted, [{ chat: OWNER, id: q.id }, { chat: OWNER, id: confirm.id }])
+  // A later text still reaches the card as Nachtrag.
+  await t.say('und bitte heute noch')
+  assert.equal(t.board.written.filter((w) => w.content.startsWith('Nachtrag von fl0w')).length, 1)
+})
+
+test('Nach der Antwort verschieben: Zusammenfassung ins Thema „Beantwortet“, Originale gelöscht, Antwort darauf ist ein Nachtrag', async () => {
+  const t = setup()
+  writeRouting(t.store, applyFlags(readRouting(t.store), { chat: String(GROUP), thema: String(T_OFFEN), nachAntwort: 'verschieben', beantwortetThema: String(T_BEANTWORTET) }))
+  t.board.issues.push(issue(4276, { title: 'E5 Konten', description: MS4276 }))
+  await ask(t)
+  const q = t.tg.sent[0]
+  const g = inGroup(t)
+  await g.press('a:1:ob', q.id)
+  const confirm = t.tg.sent.at(-1)!
+  t.advance(121_000)
+  await t.bot.flush()
+  const moved = t.tg.sent.at(-1)!
+  assert.deepEqual([moved.chat, moved.thread], [GROUP, T_BEANTWORTET])
+  assert.match(moved.text, /^Entscheidung für MS-4276 \(model2star\.com\)/)
+  assert.match(moved.text, /Antwort 25\.11\.2026, 15:0\d: Option \(b\)/)
+  assert.match(moved.text, /Steht an der Karte\. Die Karte steht auf done/)
+  assert.doesNotMatch(moved.text, /Antwort per Knopf oder als Text/)
+  assert.deepEqual(t.tg.deleted, [{ chat: GROUP, id: q.id }, { chat: GROUP, id: confirm.id }])
+  await inGroup(t, GROUP, T_BEANTWORTET).say('Nachtrag: Konto heißt model2star_de', OWNER, moved.id)
+  assert.equal(t.board.written.filter((w) => w.content.startsWith('Nachtrag von fl0w')).length, 1)
+})
+
+test('Verschieben scheitert: Originale bleiben stehen, nichts geht verloren', async () => {
+  const t = setup()
+  writeRouting(t.store, applyFlags(readRouting(t.store), { nachAntwort: 'verschieben', beantwortetChat: String(GROUP), beantwortetThema: String(T_BEANTWORTET) }))
+  t.board.issues.push(issue(1, { title: 'Entscheidung: X', description: 'Frage: Machen wir das?' }))
+  await ask(t)
+  await t.press('a:1:j')
+  const send = t.tg.send.bind(t.tg)
+  t.tg.send = async (to, ...rest) => {
+    if (to.chat === GROUP) throw new Error('Bad Request: chat not found')
+    return send(to, ...rest)
+  }
+  t.advance(121_000)
+  assert.equal(await t.bot.flush(), 1)
+  assert.deepEqual(t.tg.deleted, [])
+})
+
+test('In Multica erledigte Frage wird bei „löschen“ entfernt statt nur entschärft', async () => {
+  const t = setup()
+  writeRouting(t.store, { ...DEFAULT_ROUTING, nachAntwort: 'loeschen' })
+  t.board.issues.push(issue(1, { title: 'Entscheidung: X', description: 'Frage: Machen wir das?' }))
+  await ask(t)
+  t.board.issues[0].status = 'done'
+  await t.bot.scan()
+  assert.deepEqual(t.tg.deleted, [{ chat: OWNER, id: t.tg.sent[0].id }])
+})
+
+test('Ziel-Einstellung: Prüfung, Thema ohne Chat, Rücksetzen, kaputter Wert fällt auf den privaten Chat', () => {
+  assert.throws(() => applyFlags(DEFAULT_ROUTING, { nachAntwort: 'verschieben' }), /braucht ein Ziel/)
+  assert.throws(() => applyFlags(DEFAULT_ROUTING, { thema: '7' }), /braucht eine Chat-ID/)
+  assert.throws(() => applyFlags(DEFAULT_ROUTING, { nachAntwort: 'archivieren' }), /erlaubt sind/)
+  assert.throws(() => applyFlags(DEFAULT_ROUTING, { chat: 'gruppe' }), /keine ganze Zahl/)
+  const g = applyFlags(DEFAULT_ROUTING, { chat: String(GROUP), thema: '7', nachAntwort: 'verschieben', beantwortetThema: '9' })
+  assert.deepEqual(g, { fragen: { chat: GROUP, thread: 7 }, nachAntwort: 'verschieben', beantwortet: { chat: GROUP, thread: 9 } })
+  assert.deepEqual(applyFlags(g, { privat: true }), DEFAULT_ROUTING)
+  const store = new Store(':memory:')
+  store.setKv('ziel', '{"fragen":{"chat":0}}')
+  assert.deepEqual(readRouting(store), DEFAULT_ROUTING)
+})
+
+test('Datenbank von vor den Chat-IDs wird übernommen: Antwort auf eine alte Frage kommt weiter an', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'decision-bot-'))
+  try {
+    const path = join(dir, 'bot.db')
+    const old = new DatabaseSync(path)
+    old.exec(`CREATE TABLE questions (id INTEGER PRIMARY KEY AUTOINCREMENT, issue_id TEXT NOT NULL, identifier TEXT NOT NULL, project TEXT, hash TEXT NOT NULL, source TEXT NOT NULL,
+      frage TEXT NOT NULL, empfehlung TEXT, optionen TEXT NOT NULL DEFAULT '[]', quelle TEXT, done_after_answer INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL DEFAULT 'neu',
+      created_at INTEGER NOT NULL, sent_at INTEGER, message_id INTEGER, snooze_until INTEGER, answer_kind TEXT, answer_option TEXT, bemerkung TEXT, via TEXT, answered_at INTEGER,
+      last_input_at INTEGER, confirm_message_id INTEGER, commented_at INTEGER, posted_at INTEGER, next_step TEXT, post_error TEXT, post_alarm_at INTEGER, closed_reason TEXT, UNIQUE (issue_id, hash));
+      CREATE TABLE messages (message_id INTEGER PRIMARY KEY, question_id INTEGER NOT NULL, kind TEXT NOT NULL, created_at INTEGER NOT NULL);
+      INSERT INTO questions (issue_id, identifier, hash, source, frage, state, created_at, message_id) VALUES ('i1', 'MS-1', 'h', 'titel', 'A?', 'gesendet', 0, 55);
+      INSERT INTO messages VALUES (55, 1, 'frage', 0);`)
+    old.close()
+    assert.throws(() => new Store(path), /braucht fl0ws Chat-ID/)
+    const store = new Store(path, OWNER)
+    assert.equal(store.get(1)!.chat_id, OWNER)
+    assert.equal(store.byMessage(OWNER, 55)!.row.identifier, 'MS-1')
+    store.db.close()
+    // Second open: nothing left to migrate, works without the chat id.
+    new Store(path).db.close()
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 // ---------------------------------------------------------------- group with topics (MS-4383)
 
-const GROUP = -1005661574626
+const FORUM = -1005661574626
 
 function groupSetup() {
-  const t = setup({ group: GROUP })
+  const t = setup({ group: FORUM })
   let upd = 10_000
   /** Button in the group; `msg` is the message the button sits on. */
   const pressIn = (data: string, msg: Sent, from = OWNER) =>
-    t.bot.handle({ update_id: upd++, callback_query: { id: `g${upd}`, from: { id: from }, message: { message_id: msg.id, message_thread_id: msg.thread ?? undefined, chat: { id: GROUP } }, data } })
+    t.bot.handle({ update_id: upd++, callback_query: { id: `g${upd}`, from: { id: from }, message: { message_id: msg.id, message_thread_id: msg.thread ?? undefined, is_topic_message: true, chat: { id: FORUM } }, data } })
   /** Text in a group topic; without replyTo it "replies" to the topic's first message, like Telegram does. */
   const sayIn = (text: string, thread: number, from = OWNER, replyTo?: number) =>
     t.bot.handle({
       update_id: upd++,
-      message: { message_id: 7000 + upd, message_thread_id: thread, chat: { id: GROUP, type: 'supergroup' }, from: { id: from }, text, reply_to_message: { message_id: replyTo ?? thread } },
+      message: { message_id: 7000 + upd, message_thread_id: thread, is_topic_message: true, chat: { id: FORUM, type: 'supergroup' }, from: { id: from }, text, reply_to_message: { message_id: replyTo ?? thread } },
     } as TgUpdate)
   return { ...t, pressIn, sayIn }
 }
@@ -557,7 +722,7 @@ test('Gruppe: die fünf Themen entstehen, Begrüßung nur in Bot-Status, Frage m
   )
   await ask(t)
   assert.deepEqual(t.tg.topics.map((x) => x.name), ['Offen', 'Dringend', 'Später', 'Beantwortet', 'Bot-Status'])
-  assert.ok(t.tg.topics.every((x) => x.chat === GROUP))
+  assert.ok(t.tg.topics.every((x) => x.chat === FORUM))
   assert.equal(t.tg.inTopic('Bot-Status').length, 1)
   assert.match(t.tg.inTopic('Bot-Status')[0].text, /schreibt ab jetzt in diese Gruppe/)
   const offen = t.tg.inTopic('Offen')
@@ -576,7 +741,7 @@ test('Gruppe: Antwort per Knopf löscht die Frage aus Offen, Eintrag in Beantwor
   await ask(t)
   const q = t.tg.inTopic('Offen')[0]
   await t.pressIn('a:1:j', q)
-  assert.deepEqual(t.tg.deleted, [{ chat: GROUP, id: q.id }])
+  assert.deepEqual(t.tg.deleted, [{ chat: FORUM, id: q.id }])
   const entry = t.tg.inTopic('Beantwortet')[0]
   assert.match(entry.text, /^Beantwortet: MS-1 \(model2star\.com\), 25\.11\.2026, 15:00 Uhr\nFrage: Machen wir das\?\nAntwort: Ja\n/)
   assert.deepEqual(t.buttons(entry), ['Bemerkung nachschieben', 'Karte öffnen'])
@@ -655,19 +820,19 @@ test('Gruppe: Knopf und Text anderer Mitglieder werden ignoriert', async () => {
 
 test('Gruppe nicht erreichbar: Frage kommt im privaten Chat, später zieht sie in die Gruppe um', async () => {
   const t = groupSetup()
-  t.tg.down.add(GROUP)
+  t.tg.down.add(FORUM)
   t.board.issues.push(issue(1, { title: 'Entscheidung: X', description: 'Frage: Machen wir das?' }))
   await ask(t)
   const priv = t.tg.sent.filter((m) => m.chat === OWNER)
   assert.equal(priv.length, 1)
   assert.match(priv[0].text, /^Entscheidung für MS-1/)
   assert.equal(t.bot.sendHealth(), null, 'privater Chat ist der Rückfall, kein Alarm')
-  t.tg.down.delete(GROUP)
+  t.tg.down.delete(FORUM)
   t.advance(121_000)
   await t.bot.sendDue()
   assert.equal(t.tg.inTopic('Offen').length, 1)
   assert.match(t.tg.lastEdit(priv[0].id)!.text, /Steht jetzt in der Gruppe im Thema Offen\.$/)
-  assert.equal(t.store.get(1)!.chat_key, GROUP)
+  assert.equal(t.store.get(1)!.chat_id, FORUM)
 })
 
 test('Gruppe: Priorität steigt auf urgent, die Frage zieht von Offen nach Dringend; alte Fragen werden vor 48 Stunden neu gestellt', async () => {
@@ -700,9 +865,9 @@ test('Gruppe: gelöschtes Thema wird beim nächsten Senden neu angelegt', async 
   await ask(t)
   const old = t.tg.topic('Offen')!
   const send = t.tg.send.bind(t.tg)
-  t.tg.send = async (chat, text, kb, fr, thread) => {
-    if (thread === old) throw new Error('Bad Request: message thread not found')
-    return send(chat, text, kb, fr, thread)
+  t.tg.send = async (to, text, kb, fr) => {
+    if (to.thread === old) throw new Error('Bad Request: message thread not found')
+    return send(to, text, kb, fr)
   }
   t.board.issues.push(issue(1, { title: 'Entscheidung: X', description: 'Frage: Machen wir das?' }))
   await ask(t)
@@ -710,27 +875,11 @@ test('Gruppe: gelöschtes Thema wird beim nächsten Senden neu angelegt', async 
   assert.equal(t.store.get(1)!.thread_id, t.tg.topics.filter((x) => x.name === 'Offen')[1].thread)
 })
 
-test('Datenbank der ersten Version: Nachrichten bekommen den Chat dazu und bleiben auffindbar', async () => {
-  const { DatabaseSync } = await import('node:sqlite')
-  const { mkdtempSync, rmSync } = await import('node:fs')
-  const { join } = await import('node:path')
-  const { tmpdir } = await import('node:os')
-  const dir = mkdtempSync(join(tmpdir(), 'decision-bot-'))
-  try {
-    const path = join(dir, 'bot.db')
-    const old = new DatabaseSync(path)
-    old.exec(`CREATE TABLE messages (message_id INTEGER PRIMARY KEY, question_id INTEGER NOT NULL, kind TEXT NOT NULL, created_at INTEGER NOT NULL);
-      INSERT INTO messages VALUES (42, 7, 'frage', 1);`)
-    old.close()
-    const store = new Store(path)
-    const cols = (store.db.prepare('PRAGMA table_info(messages)').all() as { name: string }[]).map((c) => c.name)
-    assert.ok(cols.includes('chat_key'))
-    const row = store.db.prepare('SELECT * FROM messages').get() as Record<string, number>
-    assert.deepEqual({ chat_key: row.chat_key, message_id: row.message_id, question_id: row.question_id }, { chat_key: 0, message_id: 42, question_id: 7 })
-    store.remember(GROUP, 42, 8, 'frage', 2)
-    assert.equal((store.db.prepare('SELECT COUNT(*) AS n FROM messages').get() as { n: number }).n, 2, 'gleiche Nachrichtennummer in der Gruppe überschreibt nichts')
-    store.db.close()
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
+test('Gruppe: das Ziel aus „ziel“ gilt nicht, solange die Gruppe eingestellt ist', async () => {
+  const t = groupSetup()
+  t.store.setKv('ziel', JSON.stringify({ fragen: { chat: -100777, thread: 5 }, nachAntwort: 'loeschen', beantwortet: null }))
+  t.board.issues.push(issue(1, { title: 'Entscheidung: X', description: 'Frage: Machen wir das?' }))
+  await ask(t)
+  assert.equal(t.tg.inTopic('Offen').length, 1)
+  assert.equal(t.tg.sent.filter((m) => m.chat === -100777).length, 0)
 })

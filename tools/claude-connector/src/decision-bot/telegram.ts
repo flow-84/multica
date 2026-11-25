@@ -15,11 +15,18 @@ export interface TgUser {
   username?: string
 }
 
+/** Where a message goes: a chat and, in a forum supergroup, a topic (message_thread_id). */
+export interface Target {
+  chat: number
+  thread: number | null
+}
+
 export interface TgMessage {
   message_id: number
-  /** Topic of a forum group; plain topic messages also "reply" to the topic's first message. */
-  message_thread_id?: number
   chat: { id: number; type: string }
+  /** Set with is_topic_message in a forum topic. */
+  message_thread_id?: number
+  is_topic_message?: boolean
   from?: TgUser
   text?: string
   reply_to_message?: { message_id: number }
@@ -28,18 +35,18 @@ export interface TgMessage {
 export interface TgUpdate {
   update_id: number
   message?: TgMessage
-  callback_query?: { id: string; from: TgUser; message?: { message_id: number; message_thread_id?: number; chat: { id: number } }; data?: string }
+  callback_query?: { id: string; from: TgUser; message?: { message_id: number; chat: { id: number }; message_thread_id?: number; is_topic_message?: boolean }; data?: string }
 }
 
 export type Keyboard = Button[][] | null
 
 /** What the bot needs from Telegram; the fake in the tests implements the same. */
 export interface Tg {
-  send(chatId: number, text: string, keyboard?: Keyboard, forceReply?: boolean, threadId?: number | null): Promise<number>
+  send(to: Target, text: string, keyboard?: Keyboard, forceReply?: boolean): Promise<number>
   edit(chatId: number, messageId: number, text: string, keyboard?: Keyboard): Promise<void>
-  answerCallback(id: string, text?: string): Promise<void>
   delete(chatId: number, messageId: number): Promise<void>
-  /** Creates a forum topic and returns its message_thread_id. */
+  answerCallback(id: string, text?: string): Promise<void>
+  /** Creates a forum topic and returns its message_thread_id (MS-4383). */
   createTopic(chatId: number, name: string, iconColor?: number): Promise<number>
 }
 
@@ -77,9 +84,9 @@ export class TelegramApi implements Tg {
     await this.call('setMyCommands', { commands: [{ command: 'offen', description: 'Alle offenen Entscheidungen' }, { command: 'hilfe', description: 'So antwortest du' }] })
   }
 
-  async send(chatId: number, text: string, keyboard?: Keyboard, forceReply = false, threadId: number | null = null): Promise<number> {
-    const body: Record<string, unknown> = { chat_id: chatId, text, link_preview_options: { is_disabled: true } }
-    if (threadId) body.message_thread_id = threadId
+  async send(to: Target, text: string, keyboard?: Keyboard, forceReply = false): Promise<number> {
+    const body: Record<string, unknown> = { chat_id: to.chat, text, link_preview_options: { is_disabled: true } }
+    if (to.thread) body.message_thread_id = to.thread
     if (forceReply) body.reply_markup = { force_reply: true, input_field_placeholder: 'Bemerkung' }
     else if (keyboard?.length) body.reply_markup = { inline_keyboard: keyboard }
     const m = await this.call<{ message_id: number }>('sendMessage', body)
@@ -101,12 +108,17 @@ export class TelegramApi implements Tg {
     }
   }
 
-  async answerCallback(id: string, text?: string): Promise<void> {
-    await this.call('answerCallbackQuery', text ? { callback_query_id: id, text } : { callback_query_id: id })
+  async delete(chatId: number, messageId: number): Promise<void> {
+    try {
+      await this.call('deleteMessage', { chat_id: chatId, message_id: messageId })
+    } catch (err) {
+      // Already gone (deleted by hand) is the wanted result.
+      if (!(err instanceof TelegramError && /message to delete not found/i.test(err.message))) throw err
+    }
   }
 
-  async delete(chatId: number, messageId: number): Promise<void> {
-    await this.call('deleteMessage', { chat_id: chatId, message_id: messageId })
+  async answerCallback(id: string, text?: string): Promise<void> {
+    await this.call('answerCallbackQuery', text ? { callback_query_id: id, text } : { callback_query_id: id })
   }
 
   async createTopic(chatId: number, name: string, iconColor?: number): Promise<number> {

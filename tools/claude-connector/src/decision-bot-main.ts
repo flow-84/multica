@@ -5,13 +5,18 @@
 //   node src/decision-bot-main.ts                       service (long polling, scan every 2 min)
 //   node src/decision-bot-main.ts frage <Karte> "<Frage>" [--option "<Text>"]... [--empfehlung "<Text>"] [--quelle "<Wer fragt>"]
 //       hands a question to the running bot. Exit 0 = the bot takes it, 4 = bot not live (caller keeps its own way).
-//   node src/decision-bot-main.ts status                live, token, open questions
+//   node src/decision-bot-main.ts status                live, token, open questions, target
+//   node src/decision-bot-main.ts ziel [--chat <id>] [--thema <id>] [--nach-antwort behalten|loeschen|verschieben]
+//                                      [--beantwortet-chat <id>] [--beantwortet-thema <id>] | [--privat]
+//       where questions go (chat, forum topic) and what happens to them after the answer; no flag = show.
+//       Takes effect with the next message, no restart.
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { MulticaApi } from './multica.ts'
 import { DecisionBot } from './decision-bot/bot.ts'
+import { applyFlags, readRouting, writeRouting } from './decision-bot/routing.ts'
 import { Store } from './decision-bot/store.ts'
 import { TelegramApi, TelegramError } from './decision-bot/telegram.ts'
 
@@ -26,7 +31,7 @@ const flowUserId = env.DECISION_BOT_FLOW_USER_ID?.trim() || '46ece536-d531-4ef9-
 const appUrl = (env.DECISION_BOT_APP_URL?.trim() || 'https://macbook-air-von-fl0w.taildc41c0.ts.net:8446').replace(/\/+$/, '')
 const slug = env.DECISION_BOT_WORKSPACE_SLUG?.trim() || 'm2s'
 const goLiveCard = env.DECISION_BOT_GOLIVE_CARD?.trim() || ''
-/** fl0w's private forum group "multica" (MS-4383); "0" = private chat only. */
+/** fl0w's private forum group "multica" with the topics (MS-4383); "0" = no group, `ziel` applies. */
 const groupId = Number(env.DECISION_BOT_GROUP_ID?.trim() || -1005661574626) || null
 const scanMs = Number(env.DECISION_BOT_SCAN_SEC ?? 120) * 1000
 const graceMs = Number(env.DECISION_BOT_GRACE_SEC ?? 120) * 1000
@@ -92,7 +97,7 @@ function makeBot(tg: TelegramApi | null, store: Store): DecisionBot {
   }
   return new DecisionBot({
     board,
-    tg: tg ?? { send: none, edit: none, answerCallback: none, delete: none, createTopic: none },
+    tg: tg ?? { send: none, edit: none, delete: none, answerCallback: none, createTopic: none },
     store,
     ownerChatId: tg ? readChatId() : 0,
     groupId,
@@ -108,8 +113,10 @@ function makeBot(tg: TelegramApi | null, store: Store): DecisionBot {
   })
 }
 
+const openStore = () => new Store(join(stateDir, 'bot.db'), readChatId())
+
 async function serve(): Promise<void> {
-  const store = new Store(join(stateDir, 'bot.db'))
+  const store = openStore()
   let waitingLogged = false
   for (;;) {
     const token = readBotToken()
@@ -198,10 +205,20 @@ async function main(): Promise<void> {
   const [cmd, ...args] = process.argv.slice(2)
   if (!cmd || cmd === 'server') return serve()
   if (cmd === 'status') {
-    const store = new Store(join(stateDir, 'bot.db'))
+    const store = openStore()
     const rows = store.inState('neu', 'gesendet', 'spaeter', 'beantwortet')
     const topics = Object.fromEntries(['offen', 'dringend', 'spaeter', 'beantwortet', 'status'].map((t) => [t, Number(store.getKv(`topic:${t}`) ?? 0) || null]))
-    console.log(JSON.stringify({ live: isLive(), token: !!readBotToken(), gruppe: groupId, themen: topics, offen: rows.map((r) => ({ id: r.id, karte: r.identifier, state: r.state, ort: r.chat_key ? `gruppe/${r.thread_id}` : 'privat', frage: r.frage.slice(0, 80) })) }, null, 2))
+    console.log(JSON.stringify({ live: isLive(), token: !!readBotToken(), gruppe: groupId, themen: topics, ziel: groupId ? 'Gruppe (ziel gilt nur ohne Gruppe)' : readRouting(store), offen: rows.map((r) => ({ id: r.id, karte: r.identifier, state: r.state, ort: r.chat_id === groupId ? `Gruppe, Thema ${r.thread_id}` : 'privat', frage: r.frage.slice(0, 80) })) }, null, 2))
+    return
+  }
+  if (cmd === 'ziel') {
+    const store = openStore()
+    const one = (name: string) => flag(args, name)[0]
+    const f = { chat: one('chat'), thema: one('thema'), nachAntwort: one('nach-antwort'), beantwortetChat: one('beantwortet-chat'), beantwortetThema: one('beantwortet-thema'), privat: args.includes('--privat') }
+    const changed = Object.values(f).some((v) => v !== undefined && v !== false)
+    const r = changed ? writeRouting(store, applyFlags(readRouting(store), f)) : readRouting(store)
+    console.log(JSON.stringify(r, null, 2))
+    if (changed) console.log('Gespeichert, gilt ab der nächsten Nachricht des Bots. Schon gestellte Fragen bleiben, wo sie sind.')
     return
   }
   if (cmd === 'frage') {
@@ -212,7 +229,7 @@ async function main(): Promise<void> {
       console.error('Bot @multicafl0wbot ist nicht live, Frage nicht übernommen.')
       process.exit(4)
     }
-    const store = new Store(join(stateDir, 'bot.db'))
+    const store = openStore()
     const r = await makeBot(null, store).addExternal(karte, frage, flag(args, 'option'), flag(args, 'empfehlung')[0] ?? null, flag(args, 'quelle')[0] ?? null)
     console.log(r.added ? `Frage für ${r.identifier} übernommen, sie geht binnen einer Minute an fl0w (@multicafl0wbot).` : `Dieselbe Frage für ${r.identifier} gab es schon, nicht erneut gestellt.`)
     return
