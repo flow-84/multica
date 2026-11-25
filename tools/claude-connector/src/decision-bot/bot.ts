@@ -9,8 +9,9 @@
 //   flush()    after the grace period the answer (with any Bemerkung) goes to the card
 import type { Comment, Issue, Project } from '../multica.ts'
 import { INACTIVE_PROJECT_STATUSES, OPEN_STATUSES, extractQuestion, externalQuestion, isCandidate, type Question } from './detect.ts'
+import { readRouting, type Routing } from './routing.ts'
 import { ACTIVE, type Row, type Store } from './store.ts'
-import type { Tg, TgUpdate } from './telegram.ts'
+import type { Target, Tg, TgMessage, TgUpdate } from './telegram.ts'
 import {
   type Answer,
   type AskedQuestion,
@@ -44,7 +45,10 @@ export interface BotDeps {
   board: () => Board
   tg: Tg
   store: Store
-  /** fl0w's Telegram id; the private chat id is the same number. */
+  /**
+   * fl0w's Telegram id; the private chat id is the same number. Only this account may answer,
+   * in the private chat or in a chat set as target (routing.ts).
+   */
   ownerChatId: number
   /** fl0w's Multica user id: comments by this member count as fl0w's answer. */
   flowUserId: string
@@ -65,6 +69,8 @@ const POST_ALARM_MS = 30 * 60_000
 const asked = (r: Row): AskedQuestion => ({ identifier: r.identifier, project: r.project, frage: r.frage, empfehlung: r.empfehlung, optionen: r.optionen, quelle: r.quelle })
 const answerOf = (r: Row): Answer => ({ kind: r.answer_kind ?? 'bemerkung', option: r.answer_option, bemerkung: r.bemerkung })
 const errText = (err: unknown) => ((err as Error)?.message ?? String(err)).slice(0, 300)
+/** Topic of an incoming message; outside forum topics Telegram's thread id means a reply chain, not a target. */
+const targetOf = (m: { chat: { id: number } } & Pick<TgMessage, 'message_thread_id' | 'is_topic_message'>): Target => ({ chat: m.chat.id, thread: m.is_topic_message ? (m.message_thread_id ?? null) : null })
 
 export class DecisionBot {
   private readonly d: Required<BotDeps>
@@ -74,6 +80,8 @@ export class DecisionBot {
   private sendPausedUntil = 0
   /** Since when sending to fl0w fails without a break, and why (for the alarm in main). */
   private sendFailing: { since: number; error: string } | null = null
+  /** Chat and topic of the update being handled: replies go back there. */
+  private inbound: Target | null = null
 
   constructor(deps: BotDeps) {
     this.d = { now: Date.now, graceMs: 120_000, log: () => {}, onLive: async () => {}, ...deps }
@@ -81,6 +89,23 @@ export class DecisionBot {
 
   private get now(): number {
     return this.d.now()
+  }
+
+  private routing(): Routing {
+    return readRouting(this.d.store)
+  }
+
+  private get home(): Target {
+    return { chat: this.d.ownerChatId, thread: null }
+  }
+
+  private questionTarget(): Target {
+    return this.routing().fragen ?? this.home
+  }
+
+  /** Chat of a stored message; rows written before chats were recorded are migrated by the store. */
+  private chatOf(chat: number | null): number {
+    return chat ?? this.d.ownerChatId
   }
 
   // ---------------------------------------------------------------- scan
@@ -189,9 +214,8 @@ export class DecisionBot {
     if (!this.d.store.update(r.id, { state: 'erledigt', closed_reason: reason }, [...ACTIVE])) return
     this.d.log(`erledigt ${r.identifier}: ${reason}`)
     if (r.message_id && r.state === 'gesendet') {
-      await this.d.tg
-        .edit(this.d.ownerChatId, r.message_id, `${questionText(asked(r))}\n\nErledigt, ${reason}. Die Knöpfe sind entfernt.`, null)
-        .catch((err) => this.d.log(`edit ${r.identifier}: ${errText(err)}`))
+      if (this.routing().nachAntwort !== 'behalten') return this.retire(r, `${questionText(asked(r), false)}\n\nErledigt, ${reason}.`)
+      await this.d.tg.edit(this.chatOf(r.chat_id), r.message_id, `${questionText(asked(r))}\n\nErledigt, ${reason}. Die Knöpfe sind entfernt.`, null).catch((err) => this.d.log(`edit ${r.identifier}: ${errText(err)}`))
     }
   }
 
@@ -203,7 +227,7 @@ export class DecisionBot {
     if (this.now < this.sendPausedUntil) return 0
     if (!this.d.store.getKv('begruesst')) {
       try {
-        await this.d.tg.send(this.d.ownerChatId, `Der Entscheidungs-Bot ist live. ${HELP_TEXT}`)
+        await this.d.tg.send(this.questionTarget(), `Der Entscheidungs-Bot ist live. ${HELP_TEXT}`)
         this.d.store.setKv('begruesst', String(this.now))
         this.sendFailing = null
         const open = this.d.store.inState('neu', 'spaeter').length
@@ -214,12 +238,13 @@ export class DecisionBot {
       }
     }
     const due = this.d.store.inState('neu', 'spaeter').filter((r) => r.state === 'neu' || (r.snooze_until ?? 0) <= this.now)
+    const to = this.questionTarget()
     for (const r of due) {
       try {
-        const id = await this.d.tg.send(this.d.ownerChatId, questionText(asked(r)), questionKeyboard(r.id, r, this.d.link(r.identifier)))
+        const id = await this.d.tg.send(to, questionText(asked(r)), questionKeyboard(r.id, r, this.d.link(r.identifier)))
         this.sendFailing = null
-        if (this.d.store.update(r.id, { state: 'gesendet', sent_at: this.now, message_id: id, snooze_until: null }, ['neu', 'spaeter'])) {
-          this.d.store.remember(id, r.id, 'frage', this.now)
+        if (this.d.store.update(r.id, { state: 'gesendet', sent_at: this.now, message_id: id, chat_id: to.chat, thread_id: to.thread, snooze_until: null }, ['neu', 'spaeter'])) {
+          this.d.store.remember(to.chat, id, r.id, 'frage', this.now)
           sent++
           this.d.log(`gesendet ${r.identifier} (#${r.id})`)
         }
@@ -244,18 +269,30 @@ export class DecisionBot {
 
   // ---------------------------------------------------------------- answers
 
+  /** Only fl0w's account, and only in the private chat or a chat set as target. */
   private isOwner(fromId: number | undefined, chatId: number | undefined): boolean {
-    return fromId === this.d.ownerChatId && chatId === this.d.ownerChatId
+    if (fromId !== this.d.ownerChatId || chatId === undefined) return false
+    const z = this.routing()
+    return chatId === this.d.ownerChatId || chatId === z.fragen?.chat || chatId === z.beantwortet?.chat
   }
 
   async handle(u: TgUpdate): Promise<void> {
+    try {
+      await this.handleUpdate(u)
+    } finally {
+      this.inbound = null
+    }
+  }
+
+  private async handleUpdate(u: TgUpdate): Promise<void> {
     if (u.callback_query) return this.onCallback(u.callback_query)
     const m = u.message
     if (!m) return
-    if (m.chat.type !== 'private' || !this.isOwner(m.from?.id, m.chat.id)) {
+    if (!this.isOwner(m.from?.id, m.chat.id)) {
       this.d.log(`ignoriert: Nachricht von ${m.from?.id ?? '?'} in Chat ${m.chat.id}`)
       return
     }
+    this.inbound = targetOf(m)
     // fl0w writes (e.g. pressed Start): sending works again, try right away.
     this.sendPausedUntil = 0
     const text = (m.text ?? '').trim()
@@ -263,7 +300,7 @@ export class DecisionBot {
     if (text.startsWith('/')) return this.onCommand(text)
 
     const replyTo = m.reply_to_message?.message_id
-    const target = replyTo ? this.d.store.byMessage(replyTo) : null
+    const target = replyTo ? this.d.store.byMessage(m.chat.id, replyTo) : null
     if (target) {
       if (target.kind === 'bemerkung' || !ACTIVE.includes(target.row.state)) return this.addBemerkung(target.row, text)
       return this.answerText(target.row, text)
@@ -281,8 +318,9 @@ export class DecisionBot {
     await this.reply(NONE_OPEN_TEXT)
   }
 
+  /** Back to where fl0w wrote or tapped; without such an update to the question target. */
   private async reply(text: string, keyboard: Parameters<Tg['send']>[2] = null): Promise<number> {
-    return this.d.tg.send(this.d.ownerChatId, text, keyboard)
+    return this.d.tg.send(this.inbound ?? this.questionTarget(), text, keyboard)
   }
 
   private pendingBemerkung(): Row | null {
@@ -298,9 +336,10 @@ export class DecisionBot {
 
   private async onCallback(cb: NonNullable<TgUpdate['callback_query']>): Promise<void> {
     if (!this.isOwner(cb.from.id, cb.message?.chat.id)) {
-      this.d.log(`ignoriert: Knopf von ${cb.from.id}`)
+      this.d.log(`ignoriert: Knopf von ${cb.from.id} in Chat ${cb.message?.chat.id ?? '?'}`)
       return
     }
+    this.inbound = cb.message ? targetOf(cb.message) : null
     const m = /^([absn]):(\d+)(?::(j|n|o[a-e]))?$/.exec(cb.data ?? '')
     const row = m ? this.d.store.get(Number(m[2])) : null
     if (!m || !row) return void (await this.d.tg.answerCallback(cb.id, 'Diese Frage kenne ich nicht mehr.'))
@@ -309,7 +348,7 @@ export class DecisionBot {
     if (action === 'a') {
       if (row.state === 'erledigt') {
         await this.d.tg.answerCallback(cb.id, 'In Multica schon erledigt.')
-        if (row.message_id) await this.d.tg.edit(this.d.ownerChatId, row.message_id, `${questionText(asked(row))}\n\nErledigt, ${row.closed_reason ?? 'in Multica'}.`, null).catch(() => {})
+        if (row.message_id) await this.d.tg.edit(this.chatOf(row.chat_id), row.message_id, `${questionText(asked(row))}\n\nErledigt, ${row.closed_reason ?? 'in Multica'}.`, null).catch(() => {})
         return
       }
       if (!ACTIVE.includes(row.state)) return void (await this.d.tg.answerCallback(cb.id, `Schon beantwortet: ${answerHead(row, answerOf(row))}`))
@@ -320,8 +359,9 @@ export class DecisionBot {
     }
     if (action === 'b') {
       await this.d.tg.answerCallback(cb.id)
-      const id = await this.d.tg.send(this.d.ownerChatId, `Bemerkung zu ${row.identifier}: schreib sie als Antwort auf diese Nachricht.`, null, true)
-      this.d.store.remember(id, row.id, 'bemerkung', this.now)
+      const to = this.inbound ?? this.questionTarget()
+      const id = await this.d.tg.send(to, `Bemerkung zu ${row.identifier}: schreib sie als Antwort auf diese Nachricht.`, null, true)
+      this.d.store.remember(to.chat, id, row.id, 'bemerkung', this.now)
       this.d.store.setKv('bemerkung', JSON.stringify({ id: row.id, at: this.now }))
       return
     }
@@ -330,7 +370,10 @@ export class DecisionBot {
       const until = tomorrowNine(this.now)
       this.d.store.update(row.id, { state: 'spaeter', snooze_until: until }, ['gesendet'])
       await this.d.tg.answerCallback(cb.id, 'Kommt morgen um 9 Uhr wieder.')
-      if (row.message_id) await this.d.tg.edit(this.d.ownerChatId, row.message_id, `${questionText(asked(row))}\n\nSpäter: kommt am ${berlin(until)} Uhr wieder.`, null).catch(() => {})
+      if (!row.message_id) return
+      // Tidy targets: the postponed message goes, the question comes again as a new one.
+      if (this.routing().nachAntwort !== 'behalten') await this.d.tg.delete(this.chatOf(row.chat_id), row.message_id).catch((err) => this.d.log(`loeschen ${row.identifier}: ${errText(err)}`))
+      else await this.d.tg.edit(this.chatOf(row.chat_id), row.message_id, `${questionText(asked(row))}\n\nSpäter: kommt am ${berlin(until)} Uhr wieder.`, null).catch(() => {})
       return
     }
     // n: ask now (from /offen)
@@ -360,11 +403,12 @@ export class DecisionBot {
     this.clearPending(row.id)
     this.d.log(`antwort ${row.identifier}: ${a.kind}${a.option ? ` ${a.option}` : ''} per ${via}`)
     if (row.message_id) {
-      await this.d.tg.edit(this.d.ownerChatId, row.message_id, `${questionText(asked(row))}\n\nAntwort ${berlin(now)}: ${answerLine(row, a)}`, null).catch((err) => this.d.log(`edit ${row.identifier}: ${errText(err)}`))
+      await this.d.tg.edit(this.chatOf(row.chat_id), row.message_id, `${questionText(asked(row))}\n\nAntwort ${berlin(now)}: ${answerLine(row, a)}`, null).catch((err) => this.d.log(`edit ${row.identifier}: ${errText(err)}`))
     }
-    const cid = await this.d.tg.send(this.d.ownerChatId, confirmText(asked(row), a, Math.round(this.d.graceMs / 1000)), confirmKeyboard(row.id, this.d.link(row.identifier)))
-    this.d.store.remember(cid, row.id, 'bestaetigung', now)
-    this.d.store.update(row.id, { confirm_message_id: cid })
+    const to = this.inbound ?? (row.chat_id ? { chat: row.chat_id, thread: row.thread_id } : this.questionTarget())
+    const cid = await this.d.tg.send(to, confirmText(asked(row), a, Math.round(this.d.graceMs / 1000)), confirmKeyboard(row.id, this.d.link(row.identifier)))
+    this.d.store.remember(to.chat, cid, row.id, 'bestaetigung', now)
+    this.d.store.update(row.id, { confirm_message_id: cid, confirm_chat_id: to.chat })
     return true
   }
 
@@ -408,9 +452,12 @@ export class DecisionBot {
         this.d.store.update(r.id, { state: 'weitergegeben', posted_at: this.now, next_step: step, post_error: null }, ['beantwortet'])
         this.d.log(`weitergegeben ${r.identifier}: ${step}`)
         done++
-        if (r.confirm_message_id) {
+        const cur = this.d.store.get(r.id)!
+        if (this.routing().nachAntwort !== 'behalten') {
+          await this.retire(cur, `${questionText(asked(cur), false)}\n\nAntwort ${berlin(cur.answered_at ?? this.now)}: ${answerLine(cur, answerOf(cur))}\nSteht an der Karte. ${step}`)
+        } else if (r.confirm_message_id) {
           await this.d.tg
-            .edit(this.d.ownerChatId, r.confirm_message_id, `${confirmText(asked(r), answerOf(r), 0).split('\n\n')[0]}\n\nSteht an der Karte. ${step}`, confirmKeyboard(r.id, this.d.link(r.identifier)))
+            .edit(this.chatOf(r.confirm_chat_id), r.confirm_message_id, `${confirmText(asked(r), answerOf(r), 0).split('\n\n')[0]}\n\nSteht an der Karte. ${step}`, confirmKeyboard(r.id, this.d.link(r.identifier)))
             .catch(() => {})
         }
       } catch (err) {
@@ -425,6 +472,28 @@ export class DecisionBot {
       }
     }
     return done
+  }
+
+  /**
+   * Question done (answer on the card, or closed in Multica) and the target is to stay tidy:
+   * "verschieben" posts `summary` to the answered target first; then question and confirmation
+   * are deleted. If the summary cannot be sent, the originals stay, so nothing is lost.
+   */
+  private async retire(r: Row, summary: string): Promise<void> {
+    const z = this.routing()
+    if (z.nachAntwort === 'verschieben' && z.beantwortet) {
+      try {
+        const id = await this.d.tg.send(z.beantwortet, summary, confirmKeyboard(r.id, this.d.link(r.identifier)))
+        // A reply to the moved message still reaches the card as Nachtrag.
+        this.d.store.remember(z.beantwortet.chat, id, r.id, 'bestaetigung', this.now)
+      } catch (err) {
+        this.d.log(`verschieben ${r.identifier}: ${errText(err)}`)
+        return
+      }
+    }
+    for (const [chat, id] of [[r.chat_id, r.message_id], [r.confirm_chat_id, r.confirm_message_id]] as const) {
+      if (id) await this.d.tg.delete(this.chatOf(chat), id).catch((err) => this.d.log(`loeschen ${r.identifier}: ${errText(err)}`))
+    }
   }
 
   /**

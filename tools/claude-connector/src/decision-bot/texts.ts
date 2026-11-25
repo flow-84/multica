@@ -82,14 +82,14 @@ export function header(q: Pick<AskedQuestion, 'identifier' | 'project'>): string
   return `Entscheidung für ${q.identifier}${q.project ? ` (${q.project})` : ''}`
 }
 
-/** The question message (plain text, no parse mode). */
-export function questionText(q: AskedQuestion): string {
+/** The question message (plain text, no parse mode); `hint` = how to answer (not on a finished question). */
+export function questionText(q: AskedQuestion, hint = true): string {
   const lines = [header(q), '', q.frage]
   if (q.empfehlung) lines.push('', `Empfehlung: ${q.empfehlung}`)
   if (q.optionen.length) lines.push('', ...q.optionen.map((o) => `${o.label} ${o.text}`))
   if (q.quelle) lines.push('', `Gefragt von: ${q.quelle}`)
   const letters = q.optionen.map((o) => o.code).join(', ')
-  lines.push('', `Antwort per Knopf oder als Text (ja, nein${letters ? `, ${letters}` : ''} oder ein Satz).`)
+  if (hint) lines.push('', `Antwort per Knopf oder als Text (ja, nein${letters ? `, ${letters}` : ''} oder ein Satz).`)
   return lines.join('\n').slice(0, 4000)
 }
 
