@@ -883,3 +883,43 @@ test('Gruppe: das Ziel aus „ziel“ gilt nicht, solange die Gruppe eingestellt
   assert.equal(t.tg.inTopic('Offen').length, 1)
   assert.equal(t.tg.sent.filter((m) => m.chat === -100777).length, 0)
 })
+
+test('Gruppe: /offen und Hinweistexte aus Offen, Dringend und Später landen in Bot-Status, fl0ws Befehl verschwindet (MS-4385)', async () => {
+  const t = groupSetup()
+  t.board.issues.push(issue(1, { title: 'Entscheidung: X', description: 'Frage: Machen wir das?' }))
+  await ask(t)
+  const offen = t.tg.topic('Offen')!
+  const questions = t.tg.inTopic('Offen').length
+  const status = t.tg.inTopic('Bot-Status').length
+
+  for (const topic of ['Offen', 'Dringend', 'Später']) {
+    const before = t.tg.deleted.length
+    await t.sayIn('/offen', t.tg.topic(topic)!)
+    assert.match(t.tg.sent.at(-1)!.text, /^Offene Entscheidungen \(1\):/)
+    assert.equal(t.tg.sent.at(-1)!.thread, t.tg.topic('Bot-Status'), `Liste aus ${topic} geht nach Bot-Status`)
+    assert.equal(t.tg.deleted.length, before + 1, `Befehl in ${topic} gelöscht`)
+    assert.ok(t.tg.deleted.at(-1)!.id >= 7000)
+  }
+  await t.sayIn('/start', offen)
+  assert.equal(t.tg.sent.at(-1)!.thread, t.tg.topic('Bot-Status'), 'Hilfe geht nach Bot-Status')
+  assert.equal(t.tg.inTopic('Offen').length, questions, 'in Offen steht nur die Frage')
+  assert.equal(t.store.get(1)!.state, 'gesendet', 'ein Befehl ist keine Antwort')
+
+  // No open question: the hint goes to Bot-Status too, fl0w's text is deleted.
+  await t.pressIn('a:1:j', t.tg.inTopic('Offen')[0])
+  t.advance(121_000)
+  await t.bot.flush()
+  t.advance(16 * 60_000)
+  const before = t.tg.deleted.length
+  await t.sayIn('noch was', offen)
+  assert.equal(t.tg.sent.at(-1)!.text.startsWith('Gerade ist keine Entscheidung offen'), true)
+  assert.equal(t.tg.sent.at(-1)!.thread, t.tg.topic('Bot-Status'))
+  assert.equal(t.tg.deleted.length, before + 1)
+  assert.equal(t.tg.inTopic('Offen').length, questions)
+  assert.equal(t.tg.inTopic('Bot-Status').length, status + 5)
+
+  // Outside the question topics the reply stays where fl0w wrote.
+  await t.sayIn('/offen', t.tg.topic('Beantwortet')!)
+  assert.equal(t.tg.sent.at(-1)!.thread, t.tg.topic('Beantwortet'))
+  assert.equal(t.tg.deleted.length, before + 1, 'in Beantwortet wird nichts gelöscht')
+})

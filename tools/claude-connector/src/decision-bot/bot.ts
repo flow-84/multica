@@ -440,15 +440,15 @@ export class DecisionBot {
     // Service messages of the group (topic created, member added) carry no text.
     if (!text && group) return
     if (!text) return void (await this.reply('Hier kommt nur Text an der Karte an. Schreib deine Antwort bitte als Text.'))
-    if (text.startsWith('/')) return this.onCommand(text)
+    const command = text.startsWith('/')
 
-    const replyTo = m.reply_to_message?.message_id
+    const replyTo = command ? undefined : m.reply_to_message?.message_id
     const target = replyTo ? this.d.store.byMessage(m.chat.id, replyTo) : null
-    const prompt = target ? (target.kind === 'bemerkung' ? replyTo! : 0) : (this.pendingPrompt(m.chat.id) ?? 0)
+    const prompt = command ? 0 : target ? (target.kind === 'bemerkung' ? replyTo! : 0) : (this.pendingPrompt(m.chat.id) ?? 0)
     try {
-      await this.onText(text, target)
+      await (command ? this.onCommand(text) : this.onText(text, target))
     } finally {
-      // Offen, Dringend and Später keep only open questions: fl0w's text and the Bemerkung prompt go.
+      // Offen, Dringend and Später keep only open questions: fl0w's text or command and the Bemerkung prompt go.
       if (group && this.isQuestionTopic(this.inbound.thread)) {
         for (const id of [m.message_id, prompt]) if (id) await this.d.tg.delete(m.chat.id, id).catch((err) => this.d.log(`loeschen: ${errText(err)}`))
       }
@@ -473,8 +473,12 @@ export class DecisionBot {
     await this.replyHere(NONE_OPEN_TEXT)
   }
 
-  /** Back to where fl0w wrote or tapped; without such an update to the question target. */
+  /**
+   * Back to where fl0w wrote or tapped; without such an update to the question target.
+   * From Offen, Dringend or Später the reply goes to Bot-Status, so those keep only questions.
+   */
   private async replyHere(text: string, keyboard: Keyboard = null): Promise<number> {
+    if (this.inbound && this.inGroup(this.inbound.chat) && this.isQuestionTopic(this.inbound.thread)) return (await this.post('status', this.home, text, keyboard)).id
     return this.d.tg.send(this.inbound ?? this.questionTarget(), text, keyboard)
   }
 
