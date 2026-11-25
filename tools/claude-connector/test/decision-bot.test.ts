@@ -70,6 +70,8 @@ class FakeBoard implements Board {
   written: { issueId: string; content: string }[] = []
   updates: { issueId: string; body: Record<string, unknown> }[] = []
   failComments = false
+  /** Number of updateIssue calls that throw before it works again. */
+  failUpdates = 0
   async projects() {
     return this.projects_
   }
@@ -96,6 +98,10 @@ class FakeBoard implements Board {
     return c
   }
   async updateIssue(issueId: string, body: Record<string, unknown>) {
+    if (this.failUpdates > 0) {
+      this.failUpdates--
+      throw new Error('multica update down')
+    }
     this.updates.push({ issueId, body })
     const i = this.issues.find((x) => x.id === issueId)!
     Object.assign(i, body)
@@ -246,12 +252,66 @@ test('Freie Textantwort „ja“ wird angenommen, nie mit „Bitte tipp auf eine
 })
 
 test('Textantworten: ok, nein mit Satz, Buchstabe, freier Satz', () => {
-  assert.deepEqual(parseTextAnswer('ok'), { kind: 'ja', option: null, bemerkung: null })
-  assert.deepEqual(parseTextAnswer('Nein, lieber nächste Woche'), { kind: 'nein', option: null, bemerkung: 'lieber nächste Woche' })
-  assert.deepEqual(parseTextAnswer('b'), { kind: 'option', option: 'b', bemerkung: null })
-  assert.deepEqual(parseTextAnswer('Option C, aber nur testweise'), { kind: 'option', option: 'c', bemerkung: 'aber nur testweise' })
-  assert.deepEqual(parseTextAnswer('aber nur mit Vornamen'), { kind: 'bemerkung', option: null, bemerkung: 'aber nur mit Vornamen' })
-  assert.deepEqual(parseTextAnswer('Alle drei einschalten'), { kind: 'bemerkung', option: null, bemerkung: 'Alle drei einschalten' })
+  const abc = ['a', 'b', 'c'].map((code) => ({ code, label: `(${code})`, text: code }))
+  assert.deepEqual(parseTextAnswer('ok', abc), { kind: 'ja', option: null, bemerkung: null })
+  assert.deepEqual(parseTextAnswer('Nein, lieber nächste Woche', abc), { kind: 'nein', option: null, bemerkung: 'lieber nächste Woche' })
+  assert.deepEqual(parseTextAnswer('b', abc), { kind: 'option', option: 'b', bemerkung: null })
+  assert.deepEqual(parseTextAnswer('Option C, aber nur testweise', abc), { kind: 'option', option: 'c', bemerkung: 'aber nur testweise' })
+  assert.deepEqual(parseTextAnswer('aber nur mit Vornamen', abc), { kind: 'bemerkung', option: null, bemerkung: 'aber nur mit Vornamen' })
+  assert.deepEqual(parseTextAnswer('Alle drei einschalten', abc), { kind: 'bemerkung', option: null, bemerkung: 'Alle drei einschalten' })
+})
+
+test('Freitext mit Anfangsbuchstabe ist nur dann eine Option, wenn die Karte sie anbietet (MS-4382)', () => {
+  const ab = [
+    { code: 'a', label: '(a)', text: 'eins' },
+    { code: 'b', label: '(b)', text: 'zwei' },
+  ]
+  const abcde = ['a', 'b', 'c', 'd', 'e'].map((code) => ({ code, label: code.toUpperCase(), text: code }))
+  assert.deepEqual(parseTextAnswer('E-Mail an ihn schicken', []), { kind: 'bemerkung', option: null, bemerkung: 'E-Mail an ihn schicken' })
+  assert.deepEqual(parseTextAnswer('D.h. wir warten noch', []), { kind: 'bemerkung', option: null, bemerkung: 'D.h. wir warten noch' })
+  assert.deepEqual(parseTextAnswer('E-Mail an ihn schicken', ab), { kind: 'bemerkung', option: null, bemerkung: 'E-Mail an ihn schicken' })
+  assert.deepEqual(parseTextAnswer('c', ab), { kind: 'bemerkung', option: null, bemerkung: 'c' })
+  // Even an offered letter is no option when it starts a word ("E-Mail", "D.h.").
+  assert.deepEqual(parseTextAnswer('E-Mail an ihn schicken', abcde), { kind: 'bemerkung', option: null, bemerkung: 'E-Mail an ihn schicken' })
+  assert.deepEqual(parseTextAnswer('D.h. wir warten noch', abcde), { kind: 'bemerkung', option: null, bemerkung: 'D.h. wir warten noch' })
+  assert.deepEqual(parseTextAnswer('b, weil schneller', ab), { kind: 'option', option: 'b', bemerkung: 'weil schneller' })
+  assert.deepEqual(parseTextAnswer('e.', abcde), { kind: 'option', option: 'e', bemerkung: null })
+})
+
+test('Freitext „E-Mail …“ auf eine Karte ohne Optionen landet als Bemerkung, nicht als „Option E“ (MS-4382)', async () => {
+  const t = setup()
+  t.board.issues.push(issue(1, { title: 'Entscheidung: X', description: 'Frage: Wie erreichen wir ihn?' }))
+  await ask(t)
+  await t.say('E-Mail an ihn schicken')
+  t.advance(121_000)
+  await t.bot.flush()
+  assert.equal(t.board.written.length, 1)
+  assert.match(t.board.written[0].content, /\*\*Bemerkung\*\*/)
+  assert.doesNotMatch(t.board.written[0].content, /Option E/)
+  assert.match(t.board.written[0].content, /Bemerkung: E-Mail an ihn schicken/)
+})
+
+test('Nächster Schritt scheitert einmal: genau ein Kommentar, danach der Schritt (MS-4382)', async () => {
+  const t = setup()
+  t.board.issues.push(issue(2, { title: 'Entscheidung: Discord', description: BLOCK, assignee_type: 'agent', assignee_id: AGENT, status: 'blocked' }))
+  await ask(t)
+  await t.say('a')
+  t.board.failUpdates = 1
+  t.advance(121_000)
+  assert.equal(await t.bot.flush(), 0)
+  assert.equal(t.store.get(1)!.state, 'beantwortet')
+  // A Bemerkung after the comment is on the card goes as Nachtrag, never lost.
+  await t.say('und bitte heute noch')
+  assert.match(t.tg.sent.at(-1)!.text, /als Nachtrag an der Karte/)
+  // /offen must not claim the answer is still on its way to the card.
+  await t.say('/offen')
+  assert.match(t.tg.sent.at(-1)!.text, /steht an der Karte, nächster Schritt folgt/)
+  assert.equal(await t.bot.flush(), 1)
+  assert.equal(t.store.get(1)!.state, 'weitergegeben')
+  const answers = t.board.written.filter((w) => w.content.startsWith('Antwort von fl0w'))
+  assert.equal(answers.length, 1, 'Antwort-Kommentar genau einmal')
+  assert.equal(t.board.written.filter((w) => w.content.startsWith('Nachtrag von fl0w')).length, 1)
+  assert.deepEqual(t.board.updates, [{ issueId: 'issue-2', body: { status: 'todo' } }])
 })
 
 test('Bemerkung-Knopf öffnet eine Antwort-Eingabe, der Text geht als Bemerkung zur Karte', async () => {
