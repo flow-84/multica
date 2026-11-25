@@ -35,6 +35,10 @@ WD_PLIST="$HOME/Library/LaunchAgents/$WD_LABEL.plist"
 AC_LABEL=com.fl0w.multica-autopilot-catchup
 AC_PLIST="$HOME/Library/LaunchAgents/$AC_LABEL.plist"
 AC_STATE="$HOME/.local/state/multica-autopilot-catchup"
+# Decision bot @multicafl0wbot (MS-4379), same code, own process and state.
+DB_LABEL=com.fl0w.multica-decision-bot
+DB_PLIST="$HOME/Library/LaunchAgents/$DB_LABEL.plist"
+DB_STATE="$HOME/.local/state/multica-decision-bot"
 
 mkdir -p "$APP" "$STATE"
 rsync -a --delete "$SRC/src" "$SRC/package.json" "$SRC/package-lock.json" "$SRC/trello-sync.json" "$APP/"
@@ -246,6 +250,45 @@ cat >"$AC_PLIST" <<PLIST
 </plist>
 PLIST
 load "$AC_LABEL" "$AC_PLIST"
+
+mkdir -p "$DB_STATE"
+cat >"$DB_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>$DB_LABEL</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>$NODE</string>
+		<string>$APP/src/decision-bot-main.ts</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>DECISION_BOT_GOLIVE_CARD</key>
+		<string>MS-4379</string>
+		<key>MULTICA_API_URL</key>
+		<string>http://localhost:8080</string>
+		<key>MULTICA_WORKSPACE_ID</key>
+		<string>50b08bfb-a5fe-426f-b012-5da67a25d153</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>30</integer>
+	<key>WorkingDirectory</key>
+	<string>$APP</string>
+	<key>StandardOutPath</key>
+	<string>$DB_STATE/bot.log</string>
+	<key>StandardErrorPath</key>
+	<string>$DB_STATE/bot.log</string>
+</dict>
+</plist>
+PLIST
+load "$DB_LABEL" "$DB_PLIST"
 
 for _ in $(seq 1 20); do
   curl -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1 && break
