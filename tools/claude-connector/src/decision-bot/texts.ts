@@ -178,6 +178,6 @@ export const GROUP_HELP_TEXT = [
   'Der Entscheidungs-Bot schreibt ab jetzt in diese Gruppe.',
   'Offen: Fragen, die deine Antwort brauchen. Dringend: Fragen von Karten mit Priorität urgent oder high.',
   'Später: zurückgestellte Fragen, sie kommen am nächsten Tag um 9 Uhr wieder in Offen.',
-  'Beantwortet: je Antwort ein Eintrag. Bot-Status: nur Fehler des Bots.',
+  'Beantwortet: je Antwort ein Eintrag. Bot-Status: Fehler des Bots und die Antworten auf Befehle wie /offen.',
   'Antworten wie bisher per Knopf oder als Text im Thema der Frage. Nur deine Antworten zählen. /offen zeigt alle offenen Entscheidungen.',
 ].join('\n')
