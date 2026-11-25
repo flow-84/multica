@@ -434,3 +434,15 @@ test('Go-live: einmal Begrüßung; lehnt Telegram ab, meldet sendHealth den Fehl
   await t.bot.sendDue()
   assert.equal(t.tg.sent.filter((x) => x.text.startsWith('Der Entscheidungs-Bot ist live.')).length, 1)
 })
+
+test('Go-live wird genau einmal gemeldet, mit der Zahl offener Fragen', async () => {
+  const t = setup()
+  t.store.setKv('begruesst', null)
+  const calls: number[] = []
+  const bot = new DecisionBot({ board: () => t.board, tg: t.tg, store: t.store, ownerChatId: OWNER, flowUserId: FLOW, link: (k) => k, onLive: async (n) => void calls.push(n) })
+  t.board.issues.push(issue(1, { title: 'Entscheidung: X', description: 'Frage: Machen wir das?' }))
+  await bot.scan()
+  await bot.sendDue()
+  await bot.sendDue()
+  assert.deepEqual(calls, [1])
+})

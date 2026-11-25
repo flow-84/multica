@@ -266,6 +266,8 @@ cat >"$DB_PLIST" <<PLIST
 	</array>
 	<key>EnvironmentVariables</key>
 	<dict>
+		<key>DECISION_BOT_GOLIVE_CARD</key>
+		<string>MS-4379</string>
 		<key>MULTICA_API_URL</key>
 		<string>http://localhost:8080</string>
 		<key>MULTICA_WORKSPACE_ID</key>

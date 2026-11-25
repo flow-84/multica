@@ -54,6 +54,8 @@ export interface BotDeps {
   /** How long an answer waits for a Bemerkung before it goes to the card. */
   graceMs?: number
   log?: (msg: string) => void
+  /** Called once, right after the first greeting reached fl0w (go-live). */
+  onLive?: (openQuestions: number) => Promise<void>
 }
 
 const BEMERKUNG_WINDOW_MS = 30 * 60_000
@@ -74,7 +76,7 @@ export class DecisionBot {
   private sendFailing: { since: number; error: string } | null = null
 
   constructor(deps: BotDeps) {
-    this.d = { now: Date.now, graceMs: 120_000, log: () => {}, ...deps }
+    this.d = { now: Date.now, graceMs: 120_000, log: () => {}, onLive: async () => {}, ...deps }
   }
 
   private get now(): number {
@@ -204,6 +206,8 @@ export class DecisionBot {
         await this.d.tg.send(this.d.ownerChatId, `Der Entscheidungs-Bot ist live. ${HELP_TEXT}`)
         this.d.store.setKv('begruesst', String(this.now))
         this.sendFailing = null
+        const open = this.d.store.inState('neu', 'spaeter').length
+        await this.d.onLive(open).catch((err) => this.d.log(`go-live-meldung: ${errText(err)}`))
       } catch (err) {
         this.sendFailed(err)
         return 0

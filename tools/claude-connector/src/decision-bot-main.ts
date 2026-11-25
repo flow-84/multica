@@ -25,6 +25,7 @@ const workspaceId = env.MULTICA_WORKSPACE_ID?.trim() || '50b08bfb-a5fe-426f-b012
 const flowUserId = env.DECISION_BOT_FLOW_USER_ID?.trim() || '46ece536-d531-4ef9-a493-be97b0118e06'
 const appUrl = (env.DECISION_BOT_APP_URL?.trim() || 'https://macbook-air-von-fl0w.taildc41c0.ts.net:8446').replace(/\/+$/, '')
 const slug = env.DECISION_BOT_WORKSPACE_SLUG?.trim() || 'm2s'
+const goLiveCard = env.DECISION_BOT_GOLIVE_CARD?.trim() || ''
 const scanMs = Number(env.DECISION_BOT_SCAN_SEC ?? 120) * 1000
 const graceMs = Number(env.DECISION_BOT_GRACE_SEC ?? 120) * 1000
 const telegramUrl = (env.DECISION_BOT_TELEGRAM_URL?.trim() || 'https://api.telegram.org').replace(/\/+$/, '')
@@ -96,6 +97,11 @@ function makeBot(tg: TelegramApi | null, store: Store): DecisionBot {
     link,
     graceMs,
     log,
+    onLive: async (open) => {
+      if (!goLiveCard) return
+      // The fl0w mention keeps the comment from starting a run of the card's agent.
+      await board().addComment(goLiveCard, `[@fl0w](mention://member/${flowUserId}) Der Entscheidungs-Bot @multicafl0wbot ist live: Die Begrüßung ist in deinem Telegram-Chat angekommen, ${open} offene Entscheidungen gehen jetzt als eigene Nachrichten raus.`)
+    },
   })
 }
 
