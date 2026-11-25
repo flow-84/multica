@@ -114,3 +114,16 @@ npm run typecheck
 ```
 
 Node 24 oder neuer führt die `.ts`-Dateien direkt aus, ohne Build-Schritt. Gespeichert wird mit dem eingebauten `node:sqlite`.
+
+## Entscheidungs-Bot @multicafl0wbot (MS-4379)
+
+Alle offenen Entscheidungen aus allen aktiven Projekten kommen an einer Stelle an, im Telegram-Bot @multicafl0wbot: eine Nachricht je Karte, Antwort per Knopf oder Text, die Antwort steht danach als Kommentar von fl0w an der Karte. LaunchAgent `com.fl0w.multica-decision-bot` (`src/decision-bot-main.ts`, Code in `src/decision-bot/`), long polling, nichts ist von außen erreichbar.
+
+- **Welche Karten:** Status backlog, todo oder blocked in einem Projekt, das nicht pausiert ist, und Titel beginnt mit „Entscheidung“ (kurzes Präfix wie „6 “ oder „E5 “ erlaubt), oder Beschreibung hat eine Zeile `Frage:` oder einen Block `## Entscheidung`, oder die Karte ist blocked und ihr letzter Kommentar ist ein `## Entscheidung`-Block eines Agenten. Ist der letzte Kommentar von fl0w, wird nicht gefragt. Abgleich alle 2 Minuten (`DECISION_BOT_SCAN_SEC`).
+- **Nachricht:** „Entscheidung für MS-XXXX (Projekt)“, Frage, Empfehlung, Optionen. Knöpfe Ja, Nein, Bemerkung, je Option (a), (b), (c) bzw. A, B einer, Später (kommt am nächsten Tag um 9 Uhr Berlin wieder) und Karte öffnen (Tailnet-Adresse `:8446`).
+- **Antwort:** Knopf oder Text (ja, ok, nein, a, Option B oder ein Satz); ein Text gilt für die Frage, auf die fl0w antwortet, sonst für die zuletzt gestellte. Danach Knöpfe weg und „Verstanden für MS-XXXX: …“. Der Kommentar geht nach 2 Minuten an die Karte (`DECISION_BOT_GRACE_SEC`), damit eine nachgeschobene Bemerkung im selben Kommentar steht; spätere Bemerkungen gehen als Nachtrag. Format wie MS-4373: „Antwort von fl0w per Telegram (Bot @multicafl0wbot, Datum, Uhrzeit Berlin, per Knopf/Text): **Antwort** / Frage: … / Bemerkung: …“.
+- **Nächster Schritt:** Agent oder Squad zuständig: der Kommentar weckt ihn, blocked geht auf todo. Sonst, wenn die Karte es vorsieht („Antwort als Kommentar, danach die Karte auf done“): Karte auf done. Der Bot legt keine Karten an, verschiebt und löscht keine.
+- **Nur fl0w:** Knöpfe und Nachrichten anderer Telegram-Konten werden ignoriert (Chat-ID aus `~/.secrets/telegram_chat_id`).
+- **Token:** `~/.secrets/multicafl0wbot-token`. Fehlt er, wartet der Dienst und prüft jede Minute; nach dem Hochladen geht er von selbst live und schickt eine Begrüßung. Lehnt Telegram das Senden 30 Minuten lang ab (fl0w hat im Bot nie Start getippt), geht ein Alarm an den Alarm-Eingang.
+- **Fragen von außen:** `node src/decision-bot-main.ts frage <Karte> "<Frage>" [--option "<Text>"]... [--empfehlung "<Text>"] [--quelle "<Wer>"]`. Exit 0 = übernommen, 4 = Bot nicht live. So schicken `m2s-recruiting-bot/scripts/report.sh` (Tagesschleife „model2star Jobs“) und `~/.claude/scripts/fl0w-entscheiden.py frage` ihre Fragen hierher, sobald der Bot live ist, statt selbst zu fragen. Eine Frage von außen ersetzt die erkannte Frage derselben Karte.
+- **Stand:** `node src/decision-bot-main.ts status`. State und Log: `~/.local/state/multica-decision-bot/` (`bot.db`, `bot.log`, Marke `live`). Neustart: `launchctl kickstart -k gui/$UID/com.fl0w.multica-decision-bot`.
