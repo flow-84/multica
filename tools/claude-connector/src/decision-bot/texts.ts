@@ -41,20 +41,21 @@ export interface Answer {
 
 const YES = /^(ja|jo|jep|jap|yes|ok|okay|passt|einverstanden|gerne|klar|mach das|mach)\b/i
 const NO = /^(nein|nee|nö|no|lieber nicht|nicht)\b/i
-const OPTION = /^(?:option\s+)?\(?([a-e])\)?(?=$|[\s,.;:!?\-])/i
+// A letter followed by punctuation that runs into a word ("E-Mail", "D.h.") starts a word, not an option.
+const OPTION = /^(?:option\s+)?\(?([a-e])\)?(?=$|\s|[,.;:!?\-](?!\p{L}))/iu
 const MAX_BEMERKUNG = 2000
 
 const rest = (t: string, n: number) => t.slice(n).replace(/^[\s,.;:!?)\-]+/, '').trim() || null
 
 /**
- * A free text answer is never rejected: "ja"/"ok" → Ja, "nein" → Nein, "a"/"Option B" → option,
- * anything else → Bemerkung. Text after the keyword is the Bemerkung.
+ * A free text answer is never rejected: "ja"/"ok" → Ja, "nein" → Nein, "a"/"Option B" → option
+ * (only letters the card offers), anything else → Bemerkung. Text after the keyword is the Bemerkung.
  */
-export function parseTextAnswer(text: string): Answer {
+export function parseTextAnswer(text: string, optionen: Pick<Option, 'code'>[]): Answer {
   const t = text.trim().slice(0, MAX_BEMERKUNG)
   const o = OPTION.exec(t)
   // "a" alone or "Option a": a bare German word starting with a letter (e.g. "aber") never matches.
-  if (o) return { kind: 'option', option: o[1].toLowerCase(), bemerkung: rest(t, o[0].length) }
+  if (o && optionen.some((x) => x.code === o[1].toLowerCase())) return { kind: 'option', option: o[1].toLowerCase(), bemerkung: rest(t, o[0].length) }
   for (const [re, kind] of [[YES, 'ja'], [NO, 'nein']] as const) {
     const m = re.exec(t)
     if (m) return { kind, option: null, bemerkung: rest(t, m[0].length) }
