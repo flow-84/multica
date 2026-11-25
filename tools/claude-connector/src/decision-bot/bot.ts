@@ -471,7 +471,7 @@ export class DecisionBot {
     const rows = this.d.store.inState(...ACTIVE, 'beantwortet')
     if (!rows.length) return void (await this.reply('Keine offenen Entscheidungen in den aktiven Projekten.'))
     const lines = rows.map((r) => {
-      const stand = r.state === 'spaeter' ? `später, kommt ${berlin(r.snooze_until ?? 0)}` : r.state === 'beantwortet' ? 'beantwortet, geht gleich an die Karte' : r.state === 'neu' ? 'kommt gleich' : 'steht im Chat'
+      const stand = r.state === 'spaeter' ? `später, kommt ${berlin(r.snooze_until ?? 0)}` : r.state === 'beantwortet' ? (r.commented_at ? 'steht an der Karte, nächster Schritt folgt' : 'beantwortet, geht gleich an die Karte') : r.state === 'neu' ? 'kommt gleich' : 'steht im Chat'
       return `• ${header(r).replace('Entscheidung für ', '')}: ${r.frage.slice(0, 140)} (${stand})`
     })
     const keyboard = rows.slice(0, 30).map((r) => [

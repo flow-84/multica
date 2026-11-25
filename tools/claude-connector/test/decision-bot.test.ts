@@ -303,6 +303,9 @@ test('Nächster Schritt scheitert einmal: genau ein Kommentar, danach der Schrit
   // A Bemerkung after the comment is on the card goes as Nachtrag, never lost.
   await t.say('und bitte heute noch')
   assert.match(t.tg.sent.at(-1)!.text, /als Nachtrag an der Karte/)
+  // /offen must not claim the answer is still on its way to the card.
+  await t.say('/offen')
+  assert.match(t.tg.sent.at(-1)!.text, /steht an der Karte, nächster Schritt folgt/)
   assert.equal(await t.bot.flush(), 1)
   assert.equal(t.store.get(1)!.state, 'weitergegeben')
   const answers = t.board.written.filter((w) => w.content.startsWith('Antwort von fl0w'))
